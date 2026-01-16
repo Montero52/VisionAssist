@@ -1,0 +1,24 @@
+# 1. Bỏ qua các file biên dịch Python (Rác)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 2. Bỏ qua môi trường ảo (Virtual Environment)
+.venv/
+venv/
+env/
+ENV/
+
+# 3. Bỏ qua file trọng số Model quá nặng (>100MB GitHub sẽ chặn)
+# Chúng ta đã có script download_weights.py để tải nó sau
+*.pth
+checkpoints/*.pth
+
+# 4. Bỏ qua các file hệ thống và cấu hình IDE
+.idea/
+.vscode/
+.DS_Store
+
+# 5. Dữ liệu tạm (nếu có)
+src/data/

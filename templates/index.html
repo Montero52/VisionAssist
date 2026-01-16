@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hệ thống Hỗ trợ Khiếm thị</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { 
+            font-family: sans-serif; 
+            text-align: center; 
+            padding: 20px; 
+            transition: background-color 0.3s; 
+            background-color: #f7f7f7; /* Màu nền nhẹ nhàng */
+        }
+        video { 
+            width: 100%; 
+            max-width: 640px; 
+            border-radius: 4px; 
+            border: 1px solid #ccc;
+        }
+        #result { 
+            margin-top: 20px; 
+            font-size: 1.2rem; 
+        }
+        .status { 
+            font-size: 0.9rem; 
+            color: gray; 
+            margin-bottom: 10px; 
+        }
+        
+        /* Style cho dòng khoảng cách (Matching mẫu cũ) */
+        #dist-line { 
+            color: #dc3545; /* Mặc định dùng màu đỏ cho cảnh báo nổi bật */
+            font-weight: bold; 
+            font-size: 1.4rem; 
+            margin-bottom: 5px; 
+        }
+        .normal {
+            color: #28a745; /* Màu xanh lá cho trạng thái an toàn */
+        }
+        .danger { 
+            color: #dc3545 !important; 
+            animation: blink 0.5s infinite; 
+            font-size: 1.5rem;
+        }
+        
+        @keyframes blink { 50% { opacity: 0.2; } }
+
+        /* Style cho phần mô tả */
+        #caption-detail {
+            color: #d32f2f; 
+            font-weight: bold; 
+            font-size: 1.5rem;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Hệ thống Hỗ trợ Khiếm thị</h1>
+    <p class="status" id="status">Đang khởi động Camera...</p>
+    
+    <div style="margin-bottom: 15px;">
+        <label for="distanceUnit">Chọn đơn vị khoảng cách:</label>
+        <select id="distanceUnit">
+            <option value="cm" selected>cm (Xăng-ti-mét)</option>
+            <option value="dm">dm (Đề-xi-mét)</option>
+            <option value="m">m (Mét)</option>
+        </select>
+    </div>
+
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+    
+    <div id="result">
+        <p id="dist-line"><span id="text-dist">Đang đo...</span></p>
+
+        <p id="caption-detail">VI: <span id="text-vi">Đang chờ...</span></p>
+    </div>
+
+<script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const textVi = document.getElementById('text-vi');
+        const textDist = document.getElementById('text-dist');
+        const distLine = document.getElementById('dist-line');
+        const status = document.getElementById('status');
+        const unitSelect = document.getElementById('distanceUnit'); // Lấy element mới
+
+        let isProcessing = false;
+        
+        // --- BIẾN ĐỂ KIỂM SOÁT GIỌNG NÓI ---
+        let lastSpokenCaption = ""; // Lưu caption lần trước (không kèm khoảng cách)
+        let lastSpeakTime = 0;      // Lưu thời điểm vừa nói
+        const SPEAK_COOLDOWN = 8000; // 8 giây mới được nói lại (nếu cảnh vẫn thế)
+        const API_URL = '/predict';
+
+        // 1. Mở Webcam
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(stream => { 
+                video.srcObject = stream; 
+                status.innerText = "Camera sẵn sàng.";
+                video.onloadedmetadata = () => {
+                    // Bắt đầu vòng lặp xử lý sau khi video được tải
+                    setInterval(captureAndSend, 6000); 
+                }
+            })
+            .catch(err => { 
+                console.error(err); 
+                status.innerText = "Lỗi Camera (Hãy dùng HTTPS hoặc localhost)!";
+            });
+
+        // 2. Hàm đọc TTS 
+        function smartSpeak(text, captionOnly, isWarning) {
+            const now = Date.now();
+            
+            // TH1: Cảnh báo nguy hiểm (dưới 0.8m) -> Đọc ngay lập tức
+            if (isWarning) {
+                forceSpeak(text);
+                lastSpeakTime = now;
+                return;
+            }
+
+            // TH2: Caption thay đổi đáng kể (phân biệt vật thể/hành động khác) -> Đọc
+            if (captionOnly !== lastSpokenCaption) {
+                forceSpeak(text);
+                lastSpokenCaption = captionOnly;
+                lastSpeakTime = now;
+                return;
+            }
+
+            // TH3: Caption giống cũ, nhưng đã quá thời gian cooldown (8 giây) -> Nhắc lại
+            if (now - lastSpeakTime > SPEAK_COOLDOWN) {
+                forceSpeak(text);
+                lastSpeakTime = now;
+            }
+        }
+
+        function forceSpeak(text) {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel(); 
+                const u = new SpeechSynthesisUtterance(text);
+                u.lang = 'vi-VN'; 
+                u.rate = 1.0; 
+                window.speechSynthesis.speak(u);
+            }
+        }
+
+        // 3. Hàm chụp và gửi ảnh
+        async function captureAndSend() {
+            if (isProcessing || video.readyState !== 4) return;
+            isProcessing = true;
+
+            // Lấy đơn vị đã chọn từ dropdown
+            const selectedUnit = unitSelect.value; 
+
+            // Đặt kích thước canvas cố định để tối ưu truyền tải
+            canvas.width = 640; canvas.height = 480; 
+            ctx.drawImage(video, 0, 0, 640, 480);
+            const imageData = canvas.toDataURL('image/jpeg', 0.5); 
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        image: imageData,
+                        unit: selectedUnit // GỬI ĐƠN VỊ ĐÃ CHỌN LÊN SERVER
+                    })
+                });
+                const result = await response.json();
+                
+                textVi.innerText = result.caption_vi;
+                
+                let isDanger = false;
+                
+                // Xử lý giao diện Cảnh báo (Matching style mẫu cũ)
+                if (result.warning) {
+                    textDist.innerText = result.warning + " (" + result.distance + ")";
+                    distLine.className = "danger"; 
+                    document.body.style.backgroundColor = "#ffecec"; // Màu nền hồng nhẹ
+                    isDanger = true;
+                } else {
+                    textDist.innerText = "Khoảng cách: " + result.distance;
+                    distLine.className = "normal"; 
+                    document.body.style.backgroundColor = "white";
+                }
+
+                // GỌI HÀM ĐỌC THÔNG MINH
+                smartSpeak(result.final_speech, result.caption_vi, isDanger);
+
+            } catch (error) {
+                console.error("Lỗi:", error);
+                status.innerText = "Lỗi kết nối Server.";
+            } finally {
+                isProcessing = false;
+            }
+        }
+        
+    </script>
+</body>
+</html>
