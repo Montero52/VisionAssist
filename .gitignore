@@ -21,4 +21,4 @@ checkpoints/*.pth
 .DS_Store
 
 # 5. Dữ liệu tạm (nếu có)
-src/data/
+src/data/*flickr8k

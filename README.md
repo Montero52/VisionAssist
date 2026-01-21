@@ -1,16 +1,20 @@
 # VisionAssist – AI Assistant for the Visually Impaired
-> **Project Status:** Active Development (Beta Phase)
-> *Current focus: Model fine-tuning and hyperparameter optimization to improve captioning accuracy.*
+> **Real-time AI system converting visual surroundings into Vietnamese speech to assist the visually impaired.**
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=for-the-badge&logo=pytorch)
 ![Flask](https://img.shields.io/badge/Flask-Web_App-000000?style=for-the-badge&logo=flask)
 ![Transformer](https://img.shields.io/badge/Transformer-ViT_%2B_T5-yellow?style=for-the-badge)
 
-> **Real-time AI system converting visual surroundings into Vietnamese speech to assist the visually impaired.**
 
+
+## Introduction
 **VisionAssist** is a Computer Vision and Deep Learning project designed to help the visually impaired perceive their environment. The system combines **Image Captioning** and **Depth Estimation** capabilities, providing feedback via **Vietnamese speech** through a mobile-optimized web interface.
 
+
+### Project Status
+> **Current Stage:Active Development (Beta Phase)**
+> Current focus: Model fine-tuning and hyperparameter optimization to improve captioning accuracy.*
 ---
 
 ## Key Features
@@ -141,22 +145,23 @@ Due to browser security policies, the Camera may not work via HTTP (IP address).
 
 ---
 
-## Author & Maintainers
 
-**Current Maintainer (Developer):**
+## Authors & Acknowledgments
+
+**Lead Developer & Current Maintainer:**
 * **Trần Nhật Quý** ([@Montero52](https://github.com/Montero52))
-* **Education:** Senior Student - Duy Tan University (Computer Science)
-* **Contact:** [trannhatquy0@gmail.com](mailto:trannhatquy0@gmail.com)
-* **LinkedIn:** [linkedin.com/in/trannhatquy](https://www.linkedin.com/in/trannhatquy)
-* **GitHub:** [github.com/Montero52](https://github.com/Montero52)
+    * **Education:** Senior Student - Duy Tan University (Computer Science)
+    * **Contact:** [trannhatquy0@gmail.com](mailto:trannhatquy0@gmail.com)
+    * **LinkedIn:** [linkedin.com/in/trannhatquy](https://www.linkedin.com/in/trannhatquy)
+    * **GitHub:** [github.com/Montero52](https://github.com/Montero52)
 * **Responsibility:** Responsible for architecture optimization, fine-tuning, and system integration (Jan 2026 - Present).
 
-**Original Contributors (Academic Phase):**
-* *Initiated as a group project at Duy Tan University with:*
-    * Hồ Hữu Quang Sang 
-    * Ngô Anh Thư 
-    * Trần Bảo Duy
-    * Phạm Văn Nhật Trường 
+**Original Contributors (Capstone Project Team):**
+*This project originated as a Graduation Thesis at Duy Tan University. Special thanks to the initial development team:*
+* Hồ Hữu Quang Sang 
+* Ngô Anh Thư 
+* Trần Bảo Duy
+* Phạm Văn Nhật Trường 
 
 ---
 > **Note:** This project was developed for educational and research purposes as part of the Graduation Thesis at Duy Tan University.
