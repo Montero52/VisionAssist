@@ -26,7 +26,7 @@
 
 ---
 
-## 🚧 Development Roadmap
+## Development Roadmap
 
 This project is currently in the **Fine-tuning phase**. Below is the progress report:
 
