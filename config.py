@@ -19,7 +19,7 @@ if os.path.exists("/content/temp_data/flickr30k_images"):
     else:
         image_dir = DATA_ROOT
         
-    print(f"👉 Đã tự động dò tìm thư mục ảnh tại: {image_dir}")
+    print(f"Đã tự động dò tìm thư mục ảnh tại: {image_dir}")
 
 # 2. Chạy trên Drive
 elif os.path.exists("/content/drive/MyDrive/01_Dev_Projects/Video_Captioning/src/data/DatasetFlickr30k"):
@@ -29,10 +29,9 @@ elif os.path.exists("/content/drive/MyDrive/01_Dev_Projects/Video_Captioning/src
 
 # 3. Chạy Local
 else:
-    DATA_ROOT = os.path.join(BASE_DIR, "src", "data", "DatasetFlickr30k")
+    DATA_ROOT = os.path.join(BASE_DIR, "src", "data", "flickr8k")
     image_dir = os.path.join(DATA_ROOT, "images")
     print(f"Đang chạy Local: {image_dir}")
-
 
 # Cấu hình đường dẫn Caption (Giữ nguyên)
 if "temp_data" in DATA_ROOT:

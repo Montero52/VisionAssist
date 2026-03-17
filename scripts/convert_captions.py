@@ -2,32 +2,43 @@ import json
 import os
 import csv
 import sys
-
 # --- 1. IMPORT TỪ CONFIG ---
 try:
-    # Import biến caption_dir từ file config.py
     from config import caption_dir
+    # Giả sử caption_dir = '.../DatasetFlickr30k/captions'
 except ImportError:
-    print("❌ Lỗi: Không tìm thấy file config.py. Hãy đặt file này ngang hàng với config.py")
+    print("Lỗi: Không tìm thấy file config.py.")
     sys.exit(1)
 
-# --- 2. THIẾT LẬP ĐƯỜNG DẪN TỰ ĐỘNG ---
+# --- 2. THIẾT LẬP ĐƯỜNG DẪN CHUẨN ---
 
-# File JSON đích (Chính là đường dẫn config.py đang dùng để train)
-OUTPUT_JSON_FILE = caption_dir
+print("Thư mục làm việc:", caption_dir)
 
-# File TXT nguồn (Suy luận: Nằm cùng thư mục với file JSON, tên là captions.txt)
-# os.path.dirname(caption_dir) -> Lấy thư mục chứa file (ví dụ: .../flickr8k/captions)
+# ĐỊNH NGHĨA INPUT (File nguồn TXT)
+# Dùng trực tiếp caption_dir, không cần tính toán folder_path loanh quanh
+INPUT_TXT_FILE = os.path.join(caption_dir, "captions.txt")
+
+# ĐỊNH NGHĨA OUTPUT (File đích JSON)
+# Sửa đuôi file thành .json để đúng với tên biến OUTPUT_JSON_FILE
+OUTPUT_JSON_FILE = os.path.join(caption_dir, "captions.json") 
+
+print("Đọc từ:", INPUT_TXT_FILE)
+print("Ghi vào:", OUTPUT_JSON_FILE)
+
 folder_path = os.path.dirname(OUTPUT_JSON_FILE)
 INPUT_TXT_FILE = os.path.join(folder_path, "captions.txt")
 
+
+# Kiểm tra file nguồn có tồn tại không để tránh lỗi
+if not os.path.exists(INPUT_TXT_FILE):
+    print(f"CẢNH BÁO: Không tìm thấy file nguồn tại {INPUT_TXT_FILE}")
 def convert_txt_to_json():
-    print(f"📂 Thư mục làm việc: {folder_path}")
+    print(f"Thư mục làm việc: {folder_path}")
     
     # Kiểm tra file nguồn
     if not os.path.exists(INPUT_TXT_FILE):
-        print(f"❌ LỖI: Không tìm thấy file nguồn tại:\n   {INPUT_TXT_FILE}")
-        print("👉 Hãy chắc chắn bạn đã đổi tên file gốc thành 'captions.txt' và để trong thư mục captions.")
+        print(f"LỖI: Không tìm thấy file nguồn tại:\n   {INPUT_TXT_FILE}")
+        print("Hãy chắc chắn bạn đã đổi tên file gốc thành 'captions.txt' và để trong thư mục captions.")
         return
 
     print(f"🔄 Đang đọc file nguồn: {os.path.basename(INPUT_TXT_FILE)}...")
@@ -69,7 +80,7 @@ def convert_txt_to_json():
                     temp_dict[img_name].append(caption)
 
     except Exception as e:
-        print(f"⚠️ Lỗi đọc file: {e}")
+        print(f"Lỗi đọc file: {e}")
         return
 
     # Chuyển đổi sang format list object
@@ -81,9 +92,9 @@ def convert_txt_to_json():
         }
         final_data.append(entry)
 
-    print(f"✅ Đã xử lý {len(final_data)} ảnh.")
+    print(f"Đã xử lý {len(final_data)} ảnh.")
     if count_skipped > 0:
-        print(f"⚠️ Đã bỏ qua {count_skipped} dòng lỗi/trống.")
+        print(f"Đã bỏ qua {count_skipped} dòng lỗi/trống.")
 
     # Tạo thư mục đích nếu chưa có (phòng hờ)
     os.makedirs(os.path.dirname(OUTPUT_JSON_FILE), exist_ok=True)
@@ -92,8 +103,8 @@ def convert_txt_to_json():
     with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f:
         json.dump(final_data, f, indent=4, ensure_ascii=False)
 
-    print(f"🎉 XONG! File JSON chuẩn đã được lưu tại:\n   {OUTPUT_JSON_FILE}")
-    print("👉 Bây giờ bạn có thể chạy 'python train.py' được rồi!")
+    print(f"XONG! File JSON chuẩn đã được lưu tại:\n   {OUTPUT_JSON_FILE}")
+    print("Bây giờ bạn có thể chạy 'python train.py' được rồi!")
 
 if __name__ == "__main__":
     convert_txt_to_json()

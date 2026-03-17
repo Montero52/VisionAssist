@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset
 from PIL import Image
 import json
@@ -7,16 +6,8 @@ import os
 import random
 
 class JsonCaptionsDataset(Dataset):
-    def __init__(self, root, annFile, image_transform=None, caption_tokenizer=None,
+    def __init__(self, root, annFile, image_transform=None, caption_tokenizer=None, 
                  max_len=64, img_key="file_name", cap_key="captions"):
-        """
-        Args:
-            root (str): Đường dẫn folder chứa ảnh.
-            annFile (str): Đường dẫn file JSON chứa caption.
-            image_transform: Hàm biến đổi ảnh (Resize, Normalize...).
-            caption_tokenizer: Tokenizer (T5Tokenizer) để mã hóa văn bản.
-            max_len (int): Độ dài tối đa của caption.
-        """
         self.root = root
         self.image_transform = image_transform
         self.caption_tokenizer = caption_tokenizer
@@ -24,44 +15,57 @@ class JsonCaptionsDataset(Dataset):
         self.img_key = img_key
         self.cap_key = cap_key
 
-        # 1. Đọc file JSON an toàn
+        # 1. Đọc file JSON
         try:
             with open(annFile, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
             raise RuntimeError(f"Lỗi không đọc được file JSON: {annFile}\nChi tiết: {e}")
 
-        # 2. Xử lý format JSON (List phẳng hoặc Dict)
+        # 2. Xử lý format
         records = data["images"] if isinstance(data, dict) and "images" in data else data
 
         self.items = []
         for d in records:
+            # Lấy tên file ảnh
             fn = d.get(self.img_key)
+            # Lấy list caption
             caps = d.get(self.cap_key, [])
             
-            # Bỏ qua nếu dữ liệu thiếu tên file hoặc không có caption
+            # Kiểm tra dữ liệu
             if not fn or not caps:
                 continue
-
-            # Làm sạch caption (chỉ lấy string)
+                
+            # Đảm bảo caption là string
             caps = [str(c).strip() for c in caps if isinstance(c, (str, list))]
             
             if len(caps) > 0:
-                self.items.append((os.path.join(root, fn), caps))
+                # Lưu đường dẫn đầy đủ và caption
+                # fn có thể là '1000268201.jpg'
+                self.items.append({
+                    "image_path": os.path.join(root, fn),
+                    "captions": caps,
+                    "image_id": fn # Lưu ID để debug
+                })
 
+        print(f"Đã tải Dataset: {len(self.items)} ảnh.")
         if not self.items:
-            raise RuntimeError("Không tìm thấy dữ liệu hợp lệ nào! Hãy kiểm tra lại cấu trúc file JSON.")
+            raise RuntimeError("Dataset trống! Kiểm tra lại đường dẫn ảnh hoặc file JSON.")
 
     def __len__(self):
         return len(self.items)
 
     def __getitem__(self, idx):
-        img_path, caps = self.items[idx]
+        item = self.items[idx]
+        img_path = item["image_path"]
+        image_id = item["image_id"]
+        caps = item["captions"]
 
         # --- A. XỬ LÝ ẢNH ---
         try:
             img = Image.open(img_path).convert("RGB")
-        except Exception:
+        except Exception as e:
+            print(f"LỖI ẢNH HỎNG: {img_path} - {e}")
             img = Image.new('RGB', (224, 224), color='black')
 
         if self.image_transform:
@@ -70,8 +74,9 @@ class JsonCaptionsDataset(Dataset):
         # --- B. XỬ LÝ CAPTION ---
         caption_text = random.choice(caps)
 
+        # Tokenize cơ bản (Không Shift, không thêm START ở đây)
+        # Để train.py tự xử lý việc cắt input/target cho đồng bộ
         if self.caption_tokenizer:
-            # 1. Tokenize để lấy LABELS (Đáp án chuẩn: A cat...)
             tokenized = self.caption_tokenizer(
                 caption_text,
                 padding="max_length",
@@ -80,40 +85,17 @@ class JsonCaptionsDataset(Dataset):
                 return_tensors="pt"
             )
             
-            # Đây là Ground Truth (Đáp án): [A, cat, ..., EOS, PAD]
-            labels = tokenized["input_ids"].squeeze()
-            
-            # 2. Tạo DECODER INPUT (Đầu vào: PAD A cat...)
-            # Kỹ thuật: Shift Right (Dịch phải)
-            # Lấy token PAD làm Start Token
-            start_token_id = self.caption_tokenizer.pad_token_id
-            
-            # Tạo tensor chứa Start Token
-            start_token_tensor = torch.tensor([start_token_id])
-            
-            # Input cho Decoder = [START] + [Labels bỏ token cuối]
-            # Ví dụ Labels: [A, B, C, EOS] -> Decoder Input: [START, A, B, C]
-            decoder_input_ids = torch.cat([start_token_tensor, labels[:-1]])
-            
-            # Tạo Attention Mask cho Decoder Input (Để model biết START là token thật)
-            decoder_attention_mask = torch.cat([torch.tensor([1]), tokenized["attention_mask"].squeeze()[:-1]])
+            # Đây là chuỗi token đầy đủ: [A, B, C, EOS, PAD...]
+            input_ids = tokenized["input_ids"].squeeze()
+            attention_mask = tokenized["attention_mask"].squeeze()
 
             return {
                 "image": img,
-                "decoder_input_ids": decoder_input_ids, # <-- Input đưa vào model (có START)
-                "labels": labels,                       # <-- Target để tính Loss (ko có START)
-                "attention_mask": decoder_attention_mask,
-                "raw_text": caption_text
+                # Trả về input_ids gốc, train.py sẽ tự cắt [:-1] làm input và [1:] làm target
+                "decoder_input_ids": input_ids, 
+                "attention_mask": attention_mask,
+                "raw_text": caption_text,
+                "image_id": image_id  # <--- QUAN TRỌNG: Để in ra tên ảnh
             }
         else:
-            return {"image": img, "caption": caption_text}
-
-class SampleCaption(nn.Module):
-    """Chọn ngẫu nhiên 1 caption (và ép về string an toàn)."""
-    def __call__(self, sample):
-        if isinstance(sample, list) and len(sample) > 0:
-            cap = random.choice(sample)
-            if isinstance(cap, list):  # Trường hợp lồng
-                cap = cap[0]
-            return str(cap)
-        return str(sample)
+            return {"image": img, "caption": caption_text, "image_id": image_id}
