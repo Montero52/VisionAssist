@@ -8,7 +8,7 @@ try:
     # Import biến caption_dir từ file config.py
     from config import caption_dir
 except ImportError:
-    print("❌ Lỗi: Không tìm thấy file config.py. Hãy đặt file này ngang hàng với config.py")
+    print("Lỗi: Không tìm thấy file config.py. Hãy đặt file này ngang hàng với config.py")
     sys.exit(1)
 
 # --- 2. THIẾT LẬP ĐƯỜNG DẪN TỰ ĐỘNG ---
@@ -22,15 +22,15 @@ folder_path = os.path.dirname(OUTPUT_JSON_FILE)
 INPUT_TXT_FILE = os.path.join(folder_path, "captions.txt")
 
 def convert_txt_to_json():
-    print(f"📂 Thư mục làm việc: {folder_path}")
+    print(f"Thư mục làm việc: {folder_path}")
     
     # Kiểm tra file nguồn
     if not os.path.exists(INPUT_TXT_FILE):
-        print(f"❌ LỖI: Không tìm thấy file nguồn tại:\n   {INPUT_TXT_FILE}")
-        print("👉 Hãy chắc chắn bạn đã đổi tên file gốc thành 'captions.txt' và để trong thư mục captions.")
+        print(f"LỖI: Không tìm thấy file nguồn tại:\n   {INPUT_TXT_FILE}")
+        print("Hãy chắc chắn bạn đã đổi tên file gốc thành 'captions.txt' và để trong thư mục captions.")
         return
 
-    print(f"🔄 Đang đọc file nguồn: {os.path.basename(INPUT_TXT_FILE)}...")
+    print(f"Đang đọc file nguồn: {os.path.basename(INPUT_TXT_FILE)}...")
     
     temp_dict = {}
     count_skipped = 0
@@ -69,7 +69,7 @@ def convert_txt_to_json():
                     temp_dict[img_name].append(caption)
 
     except Exception as e:
-        print(f"⚠️ Lỗi đọc file: {e}")
+        print(f"Lỗi đọc file: {e}")
         return
 
     # Chuyển đổi sang format list object
@@ -81,9 +81,9 @@ def convert_txt_to_json():
         }
         final_data.append(entry)
 
-    print(f"✅ Đã xử lý {len(final_data)} ảnh.")
+    print(f"Đã xử lý {len(final_data)} ảnh.")
     if count_skipped > 0:
-        print(f"⚠️ Đã bỏ qua {count_skipped} dòng lỗi/trống.")
+        print(f"Đã bỏ qua {count_skipped} dòng lỗi/trống.")
 
     # Tạo thư mục đích nếu chưa có (phòng hờ)
     os.makedirs(os.path.dirname(OUTPUT_JSON_FILE), exist_ok=True)
@@ -92,8 +92,8 @@ def convert_txt_to_json():
     with open(OUTPUT_JSON_FILE, 'w', encoding='utf-8') as f:
         json.dump(final_data, f, indent=4, ensure_ascii=False)
 
-    print(f"🎉 XONG! File JSON chuẩn đã được lưu tại:\n   {OUTPUT_JSON_FILE}")
-    print("👉 Bây giờ bạn có thể chạy 'python train.py' được rồi!")
+    print(f"XONG! File JSON chuẩn đã được lưu tại:\n   {OUTPUT_JSON_FILE}")
+    print("Bây giờ bạn có thể chạy 'python train.py' được rồi!")
 
 if __name__ == "__main__":
     convert_txt_to_json()

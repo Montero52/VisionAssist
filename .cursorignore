@@ -1,0 +1,35 @@
+# 1. BỎ QUA TRỌNG SỐ MÔ HÌNH AI (Rất nặng, AI không đọc được file nhị phân)
+checkpoints/
+*.pth
+*.pt
+*.onnx
+*.weights
+*.bin
+
+# 2. BỎ QUA TÀI NGUYÊN MEDIA & ẢNH TEST (Chỉ chứa pixel, không chứa text logic)
+static/images/
+tests/assets/
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.avi
+
+# 3. BỎ QUA MÔI TRƯỜNG ẢO & FILE ẨN (Tránh AI đọc nhầm code của thư viện chuẩn)
+venv/
+env/
+.env
+.venv/
+node_modules/
+
+# 4. BỎ QUA FILE CACHE CỦA PYTHON (File sinh ra tự động trong quá trình chạy)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 5. BỎ QUA FILE CẤU HÌNH IDE & HỆ ĐIỀU HÀNH
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

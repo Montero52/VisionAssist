@@ -26,7 +26,7 @@
 
 ---
 
-## 🚧 Development Roadmap
+## Development Roadmap
 
 This project is currently in the **Fine-tuning phase**. Below is the progress report:
 
@@ -115,7 +115,6 @@ python download_weights.py
 
 ```bash
 python app.py
-
 ```
 
 Access at: `http://localhost:5000`
