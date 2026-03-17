@@ -1,167 +1,146 @@
-# VisionAssist – AI Assistant for the Visually Impaired
-> **Real-time AI system converting visual surroundings into Vietnamese speech to assist the visually impaired.**
+# VisionAssist | Real-time Multimodal AI Assistant
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=for-the-badge&logo=pytorch)
-![Flask](https://img.shields.io/badge/Flask-Web_App-000000?style=for-the-badge&logo=flask)
-![Transformer](https://img.shields.io/badge/Transformer-ViT_%2B_T5-yellow?style=for-the-badge)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C.svg)](https://pytorch.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Transformers](https://img.shields.io/badge/Library-Transformers-yellow.svg)](https://huggingface.co/)
+[![Flask](https://img.shields.io/badge/Framework-Flask-lightgrey.svg)](https://flask.palletsprojects.com/)
 
+An end-to-end computer vision and natural language processing solution designed to assist visually impaired individuals by providing real-time environmental awareness and obstacle warnings.
 
-
-## Introduction
-**VisionAssist** is a Computer Vision and Deep Learning project designed to help the visually impaired perceive their environment. The system combines **Image Captioning** and **Depth Estimation** capabilities, providing feedback via **Vietnamese speech** through a mobile-optimized web interface.
-
-
-### Project Status
-> **Current Stage:Active Development (Beta Phase)**
-> Current focus: Model fine-tuning and hyperparameter optimization to improve captioning accuracy.*
----
-
-## Key Features
-
-* **Smart Image Captioning:** Utilizes the powerful ViT-Base/16 architecture (trained on Flickr30k) as the Encoder and a large-scale Transformer Decoder to generate highly accurate descriptions.
-* **Dual-Stage Obstacle Warning:** Integrates MiDaS to detect obstacles with two safety zones: Caution (< 1.5m) and Danger (< 0.8m) for enhanced safety.
-* **Vietnamese Voice Feedback:** Automatically translates descriptions into Vietnamese and converts them to speech (TTS), allowing hands-free operation.
-* **Real-time Processing:** Processing pipeline optimized on Flask to ensure minimal latency.
+<!-- <div align="center">
+  <img src="assets/images/demo.gif" width="750" alt="VisionAssist Demo">
+  <p><i>Dual-Branch AI: Semantic Image Captioning & Spatial Distance Estimation via Web Interface</i></p>
+</div> -->
 
 ---
+## Project Overview
+VisionAssist transforms visual scenes into actionable audio feedback. The system mitigates the environmental awareness challenges faced by the visually impaired by implementing a **Dual-Branch Inference Pipeline**. Engineered for multimodal processing, it combines state-of-the-art Image Captioning with Monocular Depth Estimation to explicitly describe surroundings and alert users of imminent physical obstacles.
 
-## Development Roadmap
+## System Capabilities & Benchmarks
+*Environment: Evaluated under standard webcam constraints (320x240 resolution).*
 
-This project is currently in the **Fine-tuning phase**. Below is the progress report:
+| Metric | Target / Range | Functionality | Status |
+| :--- | :--- | :--- | :--- |
+| **Inference Cycle** | 10 Seconds | Web-to-Server Sync | Configurable |
+| **Danger Zone** | < 0.8 Meters | High-Priority TTS Alert | Active |
+| **Caution Zone** | 0.8m - 1.5m | Moderate Warning | Active |
+| **Safe Zone** | > 1.5 Meters | Standard Scene Description | Active |
 
-* [x] **Phase 1: Architecture Design** (Completed)
-    * Implemented ViT (Vision Transformer) for frame feature extraction.
-    * Integrated T5 for caption generation.
-* [x] **Phase 2: Data Pipeline** (Completed)
-    * Built preprocessing pipeline for Flickr30k datasets.
-* [ ] **Phase 3: Optimization (Current Focus)**
-    * Fine-tuning model weights on GPU.
-    * Analyzing Loss/Accuracy metrics.
-* [ ] **Phase 4: Final Demo**
-    * Deploy Web Interface with live camera feed.
----
+> **Technical Insight:** By decoupling the semantic generation (ViT-Transformer) and spatial logic (Depth Anything V2), the system dynamically filters safe environments while instantly triggering alarms for close-proximity hazards.
 
-## System Architecture
+## Key Technical Highlights
+### 1. Dual-Branch AI Architecture
+* **Semantic Captioning (Branch A):** Utilizes `timm` for a pre-trained **ViT (Vision Transformer)** Encoder and a custom-built **T5-style Decoder** with Cross-Attention mechanisms. It employs Length-Normalized Beam Search for accurate and natural language generation.
+* **Distance Estimation (Branch B):** Integrates **Depth Anything V2 (Small)** to generate high-quality depth maps. It applies dynamic ROI (Region of Interest) scanning and geometric quadratic regression to convert raw depth into physical distance (meters).
 
-The system operates based on two parallel processing pipelines:
+### 2. Production-Grade MLOps Pipeline
+* **Separation of Concerns:** Core inference libraries (`src/main/`) are strictly isolated from execution entry points (`scripts/`), ensuring a clean, scalable, and highly testable codebase.
+* **Real-time TTS Feedback:** Automated browser-based Web Speech API integration that converts translated Vietnamese captions into natural audio instructions.
+* **Runtime Stability:** Includes basic tensor cleanup and memory hygiene patterns to maintain stability during continuous inference.
 
-**1. Image Captioning Pipeline (ViT + T5)**
-Input Image → ViT Encoder → Feature Projection → T5 Decoder → Caption (En) → Translator → Speech (Vi)
+## Tech Stack
+* **Core AI:** PyTorch, Hugging Face Transformers, timm (Vision Models).
+* **Depth Estimation:** Depth Anything V2.
+* **Backend:** Python, Flask.
+* **Processing:** OpenCV, NumPy, Deep Translator.
+* **Frontend:** HTML5, CSS3, JavaScript (Web Speech API).
 
-**2. Depth Estimation Pipeline (MiDaS)**
-Input Image → MiDaS Model → Depth Map → Center Crop Processing → Distance Calc → Warning Logic
-
----
-
-## Directory Structure
-
+## Project Structure
 ```text
-VisionAssist/
-├── checkpoints/        # Contains model weights (.pth)
-├── src/
-│   ├── main/
-│   │   ├── encode/     # ViT-Base Encoder
-│   │   ├── decode/     # Transformer Decoder 
-│   │   ├── model/      # Combined Architecture
-│   │   ├── distance.py # Distance estimation logic & ROI processing
-│   └── utils/          # Utility functions
-├── templates/          # Web Interface (HTML)
-├── static/             # Static resources (CSS, Images)
-├── app.py              # Main Flask Server
-├── config.py           # Model configuration parameters
-├── download_weights.py # Automatic model download script
-└── requirements.txt    # List of dependencies
-
+vision-assist/
+├── checkpoints/         # Model weights (e.g. *.pth/*.pt) - excluded from Git
+├── scripts/             # Execution scripts (Train, Data Split, Convert)
+├── src/                 # Core AI Library
+│   ├── data/            # Dataset loaders & data utilities (Flickr8k/30k style JSON)
+│   └── main/            # Core inference logic (ViT, Decoder, Distance)
+├── static/              # Frontend UI assets (CSS, JS)
+├── templates/           # Web UI templates (HTML)
+├── app.py               # Main Flask server entry point
+├── config.py            # Global system hyper-parameters
+├── requirements.txt     # Python dependencies
+└── download_weights.py  # Automated script to fetch model weights
 ```
 
----
+## Quick Start
 
-## Installation & Setup
+### 1. Prerequisites
 
-### 1. Environment Preparation
+* **Python 3.8+**
+* **Webcam** (Required for real-time capturing)
+* **CUDA-enabled GPU** (Highly recommended for PyTorch acceleration)
 
-Requires Python 3.8+. A virtual environment is recommended.
+### 2. Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/Montero52/VisionAssist.git
 cd VisionAssist
 
+# Setup Virtual Environment
 python -m venv .venv
-# Windows:
-.\.venv\Scripts\activate
-# Linux/Mac:
+# macOS/Linux
 source .venv/bin/activate
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
 
+# Install Dependencies
 pip install -r requirements.txt
-
 ```
 
-### 2. Download Model Weights (Experimental)
+### 3. Model Setup (Weights Downloading)
 
-> **Note:** The model is currently in the **Beta Fine-tuning phase**. The weights below are provided for testing purposes only and may produce inaccurate captions in complex scenes.
-
-* **Current Version:** `v0.5-beta` (Trained on 50 epochs)
-* **Download Link:** [[Click here to download (.pth)](https://drive.usercontent.google.com/download?id=1Dv-X56iR1E3DLqKSZXn5didC-0gpKNZZ&authuser=0)]
-
-The project requires the `model_epoch_50.pth` weight file. You can download it automatically using:
+Due to file size limitations, the heavy model checkpoints are not included in the repository. Run the automated script to fetch the required weights into the `checkpoints/` directory:
 
 ```bash
 python download_weights.py
 ```
-*To achieve the best results, it is recommended to train the model from scratch using the provided dataset.*
 
-### 3. Run Application
+> **Important:** The Flask app currently loads `checkpoints/vizwiz_adapted_final.pth`. If your checkpoint has a different name, update `CHECKPOINT_PATH` inside `app.py`.
+
+### 4. Configuration & Launch
 
 ```bash
+# Launch the Flask Server
 python app.py
+```
+*Once the server is running, navigate to `http://127.0.0.1:5000` in your web browser. Allow camera permissions to begin real-time analysis.*
 
+## Training (Flickr Captioning)
+
+### 1. Prepare captions (Flickr8k/30k)
+
+```bash
+# Convert captions.txt -> captions.json (inside your captions folder)
+python scripts/convert_captions.py
+
+# Split captions.json -> train/val/test JSON files
+python scripts/split_data.py
 ```
 
-Access at: `http://localhost:5000`
+### 2. Train
 
----
+```bash
+python scripts/train.py
+```
 
-## Usage Guide
+> **Dataset note:** Datasets are intentionally ignored by Git (see `.gitignore`). Place your dataset under the path expected by `config.py` (or adjust `DATA_ROOT`, `image_dir`, `caption_dir` accordingly).
 
-1. Ensure the computer has a Webcam (or external camera connected).
-2. Open a browser and access the localhost address.
-3. Grant **Camera access** when prompted.
-4. The system will automatically analyze the scene and read results after every processing cycle (default 6 seconds).
+## Deployment Note
 
-**Note for Mobile Usage:**
-Due to browser security policies, the Camera may not work via HTTP (IP address). To test on a mobile device, using **ngrok** to create a secure HTTPS tunnel is recommended.
+By default, `app.py` runs Flask in **debug mode** for local development. For production-like serving, use a WSGI server (e.g., Waitress/Gunicorn) and disable debug.
 
----
-
-## Technologies Used
-
-* **Deep Learning:** PyTorch, Torchvision, Timm
-* **Models:** Vision Transformer (ViT-Base/16), Transformer Decoder (Custom T5-style), MiDaS (DPT-Hybrid)
-* **Dataset:** Flickr30k
-* **Backend:** Flask
-* **Frontend:** HTML5, JavaScript (Web Speech API)
-* **Tools:** OpenCV, Numpy, Deep-translator
-
----
-
+## License
+This project is licensed under the **MIT License**. It is free to use for academic, research, and personal purposes. See the `LICENSE` file for the full license text.
 
 ## Authors & Acknowledgments
 
-**Lead Developer & Current Maintainer:**
-* **Trần Nhật Quý** ([@Montero52](https://github.com/Montero52))
-    * **Education:** Senior Student - Duy Tan University (Computer Science)
-    * **Contact:** [trannhatquy0@gmail.com](mailto:trannhatquy0@gmail.com)
-    * **LinkedIn:** [linkedin.com/in/trannhatquy](https://www.linkedin.com/in/trannhatquy)
-    * **GitHub:** [github.com/Montero52](https://github.com/Montero52)
-* **Responsibility:** Responsible for architecture optimization, fine-tuning, and system integration (Jan 2026 - Present).
+**Trần Nhật Quý** *Lead Developer & Maintainer* | [LinkedIn](https://www.linkedin.com/in/trannhatquy) | [GitHub](https://github.com/Montero52) | [trannhatquy0@gmail.com](mailto:trannhatquy0@gmail.com)
 
-**Original Contributors (Capstone Project Team):**
-*This project originated as a Graduation Thesis at Duy Tan University. Special thanks to the initial development team:*
-* Hồ Hữu Quang Sang 
-* Ngô Anh Thư 
-* Trần Bảo Duy
-* Phạm Văn Nhật Trường 
+* **Personal Extensions (v2.0+):** Independently refactored the entire project structure for MLOps standards, integrated **Depth Anything V2** for precise spatial logic, optimized the **ViT-Transformer pipeline** for real-time web inference, and tightened the deployment rules.
+
+**Original Capstone Team (v1.0):**
+* VisionAssist originated as a Graduation Thesis at Duy Tan University. Special thanks to the initial development team for building the core data preparation and base architecture: *Hồ Hữu Quang Sang, Ngô Anh Thư, Trần Bảo Duy, Phạm Văn Nhật Trường*.
 
 ---
 > **Note:** This project was developed for educational and research purposes as part of the Graduation Thesis at Duy Tan University.
