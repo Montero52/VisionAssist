@@ -1,0 +1,57 @@
+/* static/style.css */
+
+body { 
+    font-family: sans-serif; 
+    text-align: center; 
+    padding: 20px; 
+    transition: background-color 0.3s; 
+    background-color: #f7f7f7; /* Màu nền nhẹ nhàng */
+}
+
+video { 
+    width: 100%; 
+    max-width: 640px; 
+    border-radius: 4px; 
+    border: 1px solid #ccc;
+}
+
+#result { 
+    margin-top: 20px; 
+    font-size: 1.2rem; 
+}
+
+.status { 
+    font-size: 0.9rem; 
+    color: gray; 
+    margin-bottom: 10px; 
+}
+
+/* Style cho dòng khoảng cách */
+#dist-line { 
+    color: #dc3545; /* Mặc định màu đỏ */
+    font-weight: bold; 
+    font-size: 1.4rem; 
+    margin-bottom: 5px; 
+}
+
+.normal {
+    color: #28a745; /* Màu xanh lá an toàn */
+}
+
+.danger { 
+    color: #dc3545 !important; 
+    animation: blink 0.5s infinite; 
+    font-size: 1.5rem;
+}
+
+@keyframes blink { 
+    50% { opacity: 0.2; } 
+}
+
+/* Style cho phần mô tả */
+#caption-detail {
+    color: #d32f2f; 
+    font-weight: bold; 
+    font-size: 1.5rem;
+    margin-top: 10px;
+}
