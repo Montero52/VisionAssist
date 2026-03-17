@@ -1,137 +1,119 @@
-from flask import Flask, request, jsonify, render_template
-from flask_cors import CORS
 import torch
 import numpy as np
+import io
+import base64
+import os
+import gc # Quản lý bộ nhớ
+import cv2
+
 from PIL import Image
 from transformers import T5Tokenizer
 from torchvision import transforms
-# --- THAY ĐỔI: Dùng deep_translator thay vì googletrans ---
 from deep_translator import GoogleTranslator
-import io
-import base64
-import os   
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 
-# --- IMPORT CÁC MODULE CỦA DỰ ÁN ---
+# --- IMPORT MODULE DỰ ÁN ---
+# Đảm bảo bạn đã có file config.py và cấu trúc thư mục src/main/...
 try:
     from config import vit_cfg, trans_cfg
     from src.main.model.model import ViT_Transformer
-    # Lưu ý: Import từ file distance gốc mà bạn đã tối giản
-    from src.main.distance import DistanceCalculator 
+    from src.main.distance import DepthEstimator
 except ImportError as e:
-    print("LỖI IMPORT: Vui lòng kiểm tra cấu trúc thư mục.")
-    print(f"Chi tiết: {e}")
+    print(f"Lỗi Import Module dự án: {e}")
+    print("-> Hãy kiểm tra lại cấu trúc thư mục src/main/...")
     exit(1)
 
 app = Flask(__name__)
 CORS(app)
 
-# Tự động chọn thiết bị
+# ==========================================
+# 1. CẤU HÌNH THIẾT BỊ
+# ==========================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"--- Đang chạy trên thiết bị: {device.upper()} ---")
+print(f"Đang chạy Server trên thiết bị: {device.upper()}")
 
 # ==========================================
-# 1. LOAD MODEL CAPTIONING (CUSTOM VIT-T5)
+# 2. LOAD MODEL CAPTIONING (ViT-T5)
 # ==========================================
-print(">> Đang tải Tokenizer (T5-base)...")
+print(">> [1/3] Tải Tokenizer...")
 try:
-    tokenizer = T5Tokenizer.from_pretrained("t5-base")
+    tokenizer = T5Tokenizer.from_pretrained("t5-base", legacy=False)
     if tokenizer.bos_token_id is None:
         tokenizer.bos_token_id = tokenizer.pad_token_id
 except Exception as e:
-    print(f"Lỗi tải Tokenizer: {e}")
+    print(f"Lỗi Tokenizer: {e}")
     exit(1)
 
-print(">> Đang khởi tạo Model ViT_Transformer...")
+print(">> [2/3] Khởi tạo Model ViT-Captioning...")
 model_custom = ViT_Transformer(vit_cfg, trans_cfg, vocab_size=len(tokenizer)).to(device)
 
-# --- Cấu hình đường dẫn model chuẩn ---
+# --- Load Checkpoint ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CHECKPOINT_DIR = os.path.join(BASE_DIR, "checkpoints")
-CHECKPOINT_NAME = "model_epoch_50.pth"
-CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, CHECKPOINT_NAME)
+CHECKPOINT_PATH = os.path.join(BASE_DIR, "checkpoints", "vizwiz_adapted_final.pth")
 
-print(f">> Đang nạp trọng số từ: {CHECKPOINT_PATH}")
+print(f">> [3/3] Load weights từ: {CHECKPOINT_PATH}")
 
-# Kiểm tra file model
 if not os.path.exists(CHECKPOINT_PATH):
-    print("\n" + "="*50)
-    print(f"LỖI NGHIÊM TRỌNG: Không tìm thấy file model!")
-    print(f"   Đường dẫn mong muốn: {CHECKPOINT_PATH}")
-    print("="*50 + "\n")
-    exit(1)
+    print(f"CẢNH BÁO: Không tìm thấy file model tại {CHECKPOINT_PATH}")
+    # exit(1) # Tạm thời comment để debug nếu chưa có file
+else:
+    try:
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model_custom.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        else:
+            model_custom.load_state_dict(checkpoint, strict=False)
+        
+        model_custom.eval()
+        print("Load Model Captioning thành công!")
 
-try:
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model_custom.load_state_dict(checkpoint['model_state_dict'], strict=False)
-    else:
-        model_custom.load_state_dict(checkpoint, strict=False)
-    
-    model_custom.eval()
-    print("Load Custom Model thành công!")
-except Exception as e:
-    print(f"LỖI LOAD MODEL: {e}")
-    exit(1)
+        # Tối ưu hóa cho CPU (Quantization)
+        if device == "cpu":
+            print("Đang tối ưu hóa Model (Quantization int8) cho CPU...")
+            model_custom = torch.quantization.quantize_dynamic(
+                model_custom, 
+                {torch.nn.Linear},
+                dtype=torch.qint8
+            )
+            print("Đã nén Model xuống int8!")
+    except Exception as e:
+        print(f"LỖI LOAD MODEL: {e}")
+        exit(1)
 
+# --- Transform ảnh cho Captioning ---
 image_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
 # ==========================================
-# 2. LOAD MODEL KHOẢNG CÁCH (DPT_HYBRID)
+# 3. LOAD MODEL KHOẢNG CÁCH (Depth Anything)
 # ==========================================
-print(">> Đang tải MiDaS (DPT_Hybrid)...")
+print(">> Đang tải Depth Anything V2...")
 try:
-    midas_model = torch.hub.load("intel-isl/MiDaS", "DPT_Hybrid", trust_repo=True) 
-    midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True).dpt_transform
+    # Không cần scale_factor vì đã fix cứng A,B,C trong class
+    dist_calc = DepthEstimator(device=device) 
 except Exception as e:
-    print(f"CẢNH BÁO: DPT_Hybrid lỗi. Thử MiDaS_small...")
-    try:
-        midas_model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", trust_repo=True)
-        midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True).small_transform
-    except Exception as e2:
-         print(f"LỖI MẠNG: {e2}")
-         exit(1)
-
-midas_model.to(device)
-midas_model.eval()
+    print(f"Lỗi Depth Model: {e}")
+    exit(1)
 
 # ==========================================
-# CẤU HÌNH TÍNH KHOẢNG CÁCH (ĐÃ TỐI GIẢN)
-# ==========================================
-# Chỉ cần 1 thông số duy nhất: Scale Factor
-MY_SCALE_FACTOR = 1880.0  # đợi 2: 415 * 1/0.22    đợt 1: #1200.0 * 1/2.89
-
-dist_calc = DistanceCalculator(
-    midas_model, 
-    midas_transforms, 
-    device, 
-    scale_factor=MY_SCALE_FACTOR
-)
-
-# ==========================================
-# HÀM HỖ TRỢ
+# 4. HÀM XỬ LÝ PHỤ TRỢ
 # ==========================================
 def format_distance_output(distance_m, unit_str):
+    """Chuyển đổi đơn vị hiển thị"""
     unit_str = unit_str.lower()
     if unit_str == 'm':
-        value = distance_m
-        unit_label = ' mét'
-        precision = 2
+        return f"{distance_m:.2f}", ' mét'
     elif unit_str == 'dm':
-        value = distance_m * 10
-        unit_label = ' đề-xi-mét'
-        precision = 1
-    else: # cm
-        value = distance_m * 100
-        unit_label = ' xăng-ti-mét'
-        precision = 0 
-    
-    return f"{value:.{precision}f}", unit_label
+        return f"{distance_m * 10:.1f}", ' đề-xi-mét'
+    else: # Default cm
+        return f"{distance_m * 100:.0f}", ' xăng-ti-mét'
 
 # ==========================================
-# 3. API ROUTE
+# 5. ROUTE API
 # ==========================================
 @app.route('/')
 def index():
@@ -139,74 +121,122 @@ def index():
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    # Khai báo biến để cleanup trong finally
+    pil_image = None
+    cv_image = None
+    img_tensor = None
+    
     try:
-        # 1. Nhận dữ liệu
+        # A. Nhận dữ liệu
         data = request.json
-        if 'image' not in data:
-            return jsonify({'error': 'Không tìm thấy ảnh gửi lên'}), 400
+        if not data or 'image' not in data:
+            return jsonify({'error': 'No image provided'}), 400
             
         unit_pref = data.get('unit', 'cm')
-            
+        
+        # B. Decode ảnh Base64
         image_data = data['image'].split(",")[1]
         image_bytes = base64.b64decode(image_data)
+        
+        # Convert sang PIL (cho Captioning) và OpenCV (cho Distance)
         pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        cv_image = np.array(pil_image)
+        cv_image = np.array(pil_image) 
+        # Lưu ý: PIL là RGB, OpenCV mặc định đọc file là BGR. 
+        # Nhưng np.array(pil) sẽ ra RGB. DepthAnything và ViT đều nhận RGB tốt.
+        # Nếu muốn hiển thị cv2.imshow đúng màu thì mới cần convert BGR.
 
-        # 2. Đo khoảng cách (Chỉ lấy Distance Z)
-        # Hàm estimate_distance mới (trong file distance.py tối giản) chỉ trả về 1 số float
-        distance_meters = dist_calc.estimate_distance(cv_image)
+        # ---------------------------------------------------------
+        # C. TÍNH KHOẢNG CÁCH & VỊ TRÍ (UPDATE QUAN TRỌNG)
+        # ---------------------------------------------------------
+        # Gọi hàm mới trả về 3 giá trị
+        distance_meters, position_text, box_coords = dist_calc.estimate_distance(cv_image)
         
-        # 3. Format đơn vị
-        dist_value, dist_unit_label = format_distance_output(distance_meters, unit_pref)
-        dist_text = f"{dist_value}{dist_unit_label}"
+        # Format đơn vị (m/cm/dm)
+        dist_value, dist_label = format_distance_output(distance_meters, unit_pref)
+        dist_display_text = f"{dist_value}{dist_label}"
         
-        # 4. Logic cảnh báo (Dựa hoàn toàn vào Z)
-        warning_msg = ""
-        prefix_speech = "Phía trước là "
-        
-        # Nếu < 0.8m: Cảnh báo nguy hiểm
-        if distance_meters < 0.8:
-            warning_msg = "CẨN THẬN! RẤT GẦN"
-            prefix_speech = "Nguy hiểm! Ngay trước mặt là "
-        # Nếu < 1.5m: Cảnh báo nhẹ
-        elif distance_meters < 1.5:
-            prefix_speech = "Khá gần, phía trước có "
-
-        # 5. Sinh Caption
+        # ---------------------------------------------------------
+        # D. SINH CAPTION (MÔ TẢ ẢNH)
+        # ---------------------------------------------------------
         img_tensor = image_transform(pil_image).unsqueeze(0).to(device)
-        max_len_caption = trans_cfg.get('max_len', 40) 
+        max_len_cfg = trans_cfg.get('max_len', 30)
 
         with torch.no_grad():
-            caption_en = model_custom.generate(
+            caption_en = model_custom.beam_search(
                 img_tensor, 
                 tokenizer, 
-                max_len=max_len_caption,
+                beam_size=3,             
+                max_len=max_len_cfg,     
                 device=device,
-                temperature=1.0,
-                top_k=5,
-                top_p=0.9
+                no_repeat_ngram_size=2,  
+                repetition_penalty=1.0   
             )
         
-        # 6. Dịch sang tiếng Việt
+        # Dịch sang Tiếng Việt
         try:
-            caption_vi = GoogleTranslator(source='en', target='vi').translate(caption_en)
+            caption_vi = GoogleTranslator(source='en', target='vi').translate(caption_en.lower())
         except Exception:
-            caption_vi = caption_en 
+            caption_vi = caption_en # Fallback nếu lỗi mạng
 
-        # 7. Tạo câu nói cuối cùng
-        final_speech = f"{prefix_speech} {caption_vi} cách {dist_value} {dist_unit_label}"
+        # ---------------------------------------------------------
+        # E. TẠO CÂU NÓI & CẢNH BÁO (LOGIC MỚI)
+        # ---------------------------------------------------------
+        warning_msg = ""
+        
+        # Logic ghép câu nói tự nhiên: [Cảnh báo] + [Vị trí] + [Vật thể] + [Khoảng cách]
+        if distance_meters < 0.8:
+            warning_msg = "CẢNH BÁO! RẤT GẦN"
+            # Vd: "Nguy hiểm! Bên trái có Cái ghế. Cách 50 xăng-ti-mét"
+            final_speech = f"Nguy hiểm! {position_text} có {caption_vi}. Cách {dist_display_text}"
+        elif distance_meters < 1.5:
+            final_speech = f"Khá gần. {position_text} là {caption_vi}. Cách {dist_display_text}"
+        else:
+            final_speech = f"{caption_vi}. {position_text} cách {dist_display_text}"
 
-        return jsonify({
+        # ---------------------------------------------------------
+        # F. TRẢ VỀ JSON
+        # ---------------------------------------------------------
+        response = {
             'caption_vi': caption_vi,
-            'distance': dist_text,
+            'distance': dist_display_text,
+            'position': position_text,      # Trả về hướng (Trái/Phải/Trước)
             'warning': warning_msg,
             'final_speech': final_speech,
-            'unit_used': dist_unit_label
-        })
+            'unit_used': dist_label,
+            'box': box_coords               # Trả về tọa độ [x1, y1, x2, y2] để vẽ
+        }
+        
+        return jsonify(response)
 
     except Exception as e:
-        print(f"LỖI SERVER: {e}")
+        print(f"SERVER ERROR: {e}")
         return jsonify({'error': str(e)}), 500
 
+    finally:
+        # ---------------------------------------------------------
+        # G. DỌN DẸP BỘ NHỚ (LUÔN CHẠY)
+        # ---------------------------------------------------------
+        # Xóa biến
+        del pil_image
+        del cv_image
+        del img_tensor
+        
+        # Dọn GPU/CPU
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+# ==========================================
+# 6. CHẠY SERVER
+# ==========================================
+# if __name__ == '__main__':
+#     from waitress import serve
+#     print("\n" + "="*50)
+#     print("SERVER ĐANG CHẠY TẠI: http://0.0.0.0:5000")
+#     print("Chế độ: Production (Waitress - Multi-thread)")
+#     print("="*50 + "\n")
+    
+#     serve(app, host='0.0.0.0', port=5000, threads=4)
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)

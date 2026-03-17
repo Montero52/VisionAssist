@@ -4,176 +4,234 @@ from src.main.decode.caption_decoder import TransformerDecoder
 import torch
 import torch.nn.functional as F
 
-
 class ViT_Transformer(nn.Module):
     def __init__(
         self,
         vit_config: dict,
         trans_cfg: dict,
-        vocab_size: int,
-        max_len: int = 32, # Tăng max_len để linh hoạt hơn
+        vocab_size: int = None, # Cho phép None để tự lấy từ config
+        max_len: int = 32, 
     ):
         super().__init__()
-
+        
+        # [FIX 1] Ưu tiên lấy vocab_size truyền vào -> rồi đến config -> cuối cùng là default T5
+        self.vocab_size = vocab_size if vocab_size is not None else trans_cfg.get('vocab_size', 32128)
+        
+        print(f"DEBUG MODEL: Initializing Decoder with Vocab Size = {self.vocab_size}")
+        
         # 1. Encoder: ViT
         self.encoder = ViT(
             image_size=vit_config.get("image_size", 224),
-            patch_size=vit_config.get("patch_size", 32),
+            patch_size=vit_config.get("patch_size", 16),
             in_channels=vit_config.get("in_channels", 3),
             embed_dim=vit_config.get("embed_dim", 768),
             depth=vit_config.get("depth", 12),
             num_heads=vit_config.get("num_heads", 12),
             mlp_ratio=vit_config.get("mlp_ratio", 4.0),
-            dropout=vit_config.get("dropout", 0.1),
+            dropout=vit_config.get("dropout", 0.0),
+            pretrained=True,
         )
 
-        # 2. Decoder: Transfomer
+        # 2. Decoder: Transformer
         self.decoder = TransformerDecoder(
-            vocab_size=vocab_size,
+            vocab_size=self.vocab_size, # <--- [QUAN TRỌNG] Phải dùng self.vocab_size (đã xử lý None)
             dim=trans_cfg.get("dim", 512),
             num_heads=trans_cfg.get("num_heads", 8),
             num_layers=trans_cfg.get("num_layers", 6),
             ff_dim=trans_cfg.get("ff_dim", 2048),
-            dropout=trans_cfg.get("dropout", 0.1),
+            dropout=trans_cfg.get("dropout", 0.0),
             max_len=trans_cfg.get("max_len", max_len)
         )
 
-        # 3. Projection Layer (Khớp kích thước giữa ViT và Decoder)
+        # 3. Projection Layer (Kết nối Encoder -> Decoder)
         vit_dim = vit_config.get("embed_dim", 768)
         trans_dim = trans_cfg.get("dim", 512)
+        
         if vit_dim != trans_dim:
             self.proj = nn.Linear(vit_dim, trans_dim)
         else:
             self.proj = nn.Identity()
 
     def forward(self, images, input_ids, padding_mask=None):
-        # ... (Encoder giữ nguyên) ...
+        """
+        images: [Batch, 3, H, W]
+        input_ids: [Batch, Seq_Len] (đã thêm Start Token)
+        padding_mask: [Batch, Seq_Len] (1 là token thật, 0 là pad)
+        """
         features = self.encoder(images) 
         encoder_out = self.proj(features)
-
-        # Decoder Masking Logic TINH CHỈNH
+      
+        # Decoder Masking Logic
         T = input_ids.size(1)
         device = input_ids.device
 
-        # 1. Look-ahead Mask (Tam giác dưới): [1, 1, T, T]
-        # Che tương lai: Hàng i chỉ nhìn được cột 0..i
-        tgt_mask = torch.tril(torch.ones(T, T, device=device)).unsqueeze(0).unsqueeze(0)
+        # 1. Causal Mask (Che tương lai) - Ma trận tam giác dưới
+        tgt_mask = torch.tril(torch.ones(T, T, device=device)).unsqueeze(0).unsqueeze(0) # [1, 1, T, T]
 
-        # 2. Xử lý Padding Mask (Nếu có)
+        # 2. Padding Mask (Che token rác)
         if padding_mask is not None:
-            # padding_mask gốc: [B, T] (1 là thật, 0 là pad)
-            
-            # Mở rộng chiều để khớp với [B, 1, T, T] (Broadcasting)
-            # Ta muốn: Tại hàng i (từ đang sinh), ta không được nhìn vào cột j nếu cột j là Pad.
-            # -> [B, 1, 1, T]
+            # padding_mask: [Batch, T] -> [Batch, 1, 1, T]
             expanded_padding_mask = padding_mask.unsqueeze(1).unsqueeze(1)
-            
-            # Kết hợp: Vị trí hợp lệ phải THỎA MÃN CẢ 2 ĐIỀU KIỆN:
-            # (1) Nằm trong quá khứ (tgt_mask == 1)
-            # (2) Không phải là Padding (padding_mask == 1)
-            # Phép nhân element-wise (1*1=1, 1*0=0) làm tốt việc này
+            # Kết hợp: Chỉ giữ lại vị trí (Quá khứ + Hiện tại) VÀ (Không phải Pad)
             tgt_mask = tgt_mask * expanded_padding_mask
 
-        # 3. Chuyển đổi sang định dạng float cho Softmax
-        # Giá trị 1 -> 0.0 (giữ nguyên)
-        # Giá trị 0 -> -inf (bị che)
+        # 3. Convert to float for Softmax (-inf để triệt tiêu attention)
         attention_mask = torch.zeros_like(tgt_mask, dtype=torch.float)
         attention_mask = attention_mask.masked_fill(tgt_mask == 0, float('-inf'))
 
-        # Gọi decoder
         logits = self.decoder(input_ids, encoder_out, attention_mask)
         return logits
-    
+
     @torch.no_grad()
-    def beam_search(self, image, tokenizer, beam_size=3, max_len=30, device="cpu"):
+    def beam_search(self, image, tokenizer, beam_size=3, max_len=30, device="cpu", alpha=0.7, no_repeat_ngram_size=2, repetition_penalty=1.0):
         """
-        Thuật toán Beam Search để sinh caption chất lượng cao nhất (Dùng cho đánh giá/báo cáo).
+        Beam Search Cải tiến: Tích hợp N-gram Blocking để chống lặp từ.
+        Args:
+            - no_repeat_ngram_size (int): Kích thước cụm từ cấm lặp lại (VD: 2 cấm "box of" ... "box of").
+            - repetition_penalty (float): > 1.0 sẽ phạt các từ đã xuất hiện (giảm xác suất của chúng).
         """
         self.eval()
         
-        # 1. Encode ảnh (Chỉ làm 1 lần)
+        # 1. Encode ảnh
         features = self.encoder(image)
-        encoder_out = self.proj(features) # [1, N, Dim]
+        encoder_out = self.proj(features)
         
-        # Lặp lại encoder_out cho đủ số lượng beam (để xử lý song song)
-        # [Beam, N, Dim]
+        # Mở rộng Encoder Output cho từng Beam: [Batch*Beam, Seq, Dim]
         encoder_out = encoder_out.expand(beam_size, -1, -1)
 
-        # 2. Khởi tạo
-        # Start token
-        start_token_id = tokenizer.bos_token_id if tokenizer.bos_token_id is not None else tokenizer.pad_token_id
+        # T5 Tokenizer IDs
+        start_token_id = tokenizer.pad_token_id
+        pad_token_id = tokenizer.pad_token_id
+        eos_token_id = tokenizer.eos_token_id
         
-        # Danh sách chứa các ứng viên (Candidate): mỗi phần tử là (điểm_số, chuỗi_token)
-        # Điểm số khởi đầu là 0.0
-        # Chuỗi token khởi đầu là [START]
+        # sequences: List chứa [list_token_ids, cumulative_score]
         sequences = [[list(), 0.0]] 
         
-        # Để bắt đầu, ta cần feed token đầu tiên vào model
-        # Lúc đầu chỉ có 1 beam (beam gốc), sau bước 1 sẽ tách thành k beam
-        input_ids = torch.tensor([[start_token_id]], device=device)
-        
-        # Duyệt qua từng bước (từng từ)
         for step in range(max_len):
             all_candidates = []
-            
-            # Với bước đầu tiên, ta chỉ chạy 1 lần (vì chưa tách beam). 
-            # Từ bước 2 trở đi, ta chạy cho 'beam_size' ứng viên.
             num_current_beams = 1 if step == 0 else len(sequences)
             
-            # Tạo input cho đợt này
-            if step > 0:
-                # Gom các chuỗi hiện tại thành tensor [Beam, T]
-                input_ids = torch.tensor([ [start_token_id] + seq[0] for seq in sequences ], device=device)
+            # --- Chuẩn bị Batch Input cho Decoder ---
+            batch_seqs = []
+            max_curr_len = max([len(seq[0]) for seq in sequences]) + 1 
             
-            # --- Forward ---
-            # Chỉ lấy đúng số lượng encoder_out tương ứng số beam hiện tại
+            for seq in sequences:
+                tokens = seq[0]
+                full_seq = [start_token_id] + tokens
+                num_pads = max_curr_len - len(full_seq)
+                full_seq = full_seq + [pad_token_id] * num_pads
+                batch_seqs.append(full_seq)
+            
+            input_ids = torch.tensor(batch_seqs, device=device) 
             curr_encoder_out = encoder_out[:num_current_beams]
             
-            # Tạo mask
+            # --- Tạo Mask ---
             T = input_ids.size(1)
             tgt_mask = torch.tril(torch.ones(T, T, device=device)).unsqueeze(0).unsqueeze(0)
+            pad_mask = (input_ids != pad_token_id).unsqueeze(1).unsqueeze(1) 
+            pad_mask[:, :, :, 0] = 1 # Fix cho T5 start token
+            
+            tgt_mask = tgt_mask * pad_mask
             attention_mask = tgt_mask.float().masked_fill(tgt_mask == 0, float('-inf'))
             
-            # Chạy Decoder
+            # Forward Decoder
             logits = self.decoder(input_ids, curr_encoder_out, attention_mask)
             
-            # Lấy log xác suất của từ cuối cùng
-            # [Beam, Vocab_Size]
-            next_token_logits = logits[:, -1, :]
-            next_token_probs = F.log_softmax(next_token_logits, dim=-1)
-
-            # --- Mở rộng Beam ---
-            # Duyệt qua từng beam hiện tại
+            # Lấy Log Softmax
+            next_token_probs_batch = F.log_softmax(logits, dim=-1)
+            
+            # Duyệt qua từng Beam
             for i in range(num_current_beams):
                 seq, score = sequences[i]
                 
-                # Nếu câu đã kết thúc (có EOS), giữ nguyên nó và không mở rộng nữa
-                if len(seq) > 0 and seq[-1] == tokenizer.eos_token_id:
+                # Nếu beam này đã kết thúc
+                if len(seq) > 0 and seq[-1] == eos_token_id:
                     all_candidates.append([seq, score])
                     continue
                 
-                # Lấy top k từ có xác suất cao nhất cho beam này
-                # top_k_probs: [Beam_size], top_k_ids: [Beam_size]
-                top_k_probs, top_k_ids = next_token_probs[i].topk(beam_size)
+                curr_idx = len(seq) 
+                # Lấy xác suất bước hiện tại (Clone để không ảnh hưởng beam khác)
+                next_token_probs = next_token_probs_batch[i, curr_idx, :].clone()
+                
+                # =========================================================
+                # 🛠️ [CODE MỚI] XỬ LÝ LẶP TỪ (REPETITION HANDLING) 🛠️
+                # =========================================================
+                
+                # 1. Repetition Penalty (Phạt nhẹ từ đã xuất hiện)
+                if repetition_penalty > 1.0:
+                    for token_id in set(seq):
+                        # Nếu log_prob < 0, chia cho penalty (>1) sẽ làm nó nhỏ hơn (âm hơn)
+                        # Nếu log_prob > 0 (hiếm), nhân với penalty
+                        if next_token_probs[token_id] < 0:
+                            next_token_probs[token_id] /= repetition_penalty
+                        else:
+                            next_token_probs[token_id] *= repetition_penalty
+
+                # 2. N-gram Blocking (Cấm tuyệt đối lặp cụm từ)
+                if no_repeat_ngram_size > 0 and len(seq) >= no_repeat_ngram_size - 1:
+                    # Lấy (N-1) từ cuối cùng làm tiền tố
+                    prefix = tuple(seq[-(no_repeat_ngram_size - 1):])
+                    
+                    # Quét lại quá khứ để xem tiền tố này từng xuất hiện ở đâu
+                    for idx in range(len(seq) - no_repeat_ngram_size + 1):
+                        # Lấy cụm N-1 từ trong quá khứ
+                        past_gram = tuple(seq[idx : idx + no_repeat_ngram_size - 1])
+                        
+                        if past_gram == prefix:
+                            # Tìm thấy lặp! Từ tiếp theo trong quá khứ là từ cấm
+                            banned_token = seq[idx + no_repeat_ngram_size - 1]
+                            # Gán điểm Âm Vô Cùng để xác suất về 0
+                            next_token_probs[banned_token] = -float('inf')
+
+                # =========================================================
+                
+                # Chọn Top K (Sau khi đã phạt/cấm từ lặp)
+                top_k_probs, top_k_ids = next_token_probs.topk(beam_size)
                 
                 for j in range(beam_size):
                     new_seq = seq + [top_k_ids[j].item()]
-                    new_score = score + top_k_probs[j].item() # Cộng dồn log_prob
+                    new_score = score + top_k_probs[j].item()
                     all_candidates.append([new_seq, new_score])
 
-            # --- Chọn lọc (Pruning) ---
-            # Sắp xếp các ứng viên theo điểm số giảm dần (lớn nhất đứng đầu)
-            ordered = sorted(all_candidates, key=lambda x: x[1], reverse=True)
-            
-            # Chỉ giữ lại k ứng viên tốt nhất
+            # Chọn beam tốt nhất
+            ordered = sorted(all_candidates, key=lambda x: x[1] / ((len(x[0]) + 1) ** alpha), reverse=True)
             sequences = ordered[:beam_size]
             
-            # Kiểm tra dừng sớm: Nếu ứng viên tốt nhất đã có EOS thì dừng luôn (cho nhanh)
-            # (Hoặc bạn có thể để chạy hết max_len cho chắc)
-            if len(sequences[0][0]) > 0 and sequences[0][0][-1] == tokenizer.eos_token_id:
+            if len(sequences[0][0]) > 0 and sequences[0][0][-1] == eos_token_id:
                 break
 
-        # 3. Trả về câu tốt nhất (Câu đầu tiên trong list)
         best_seq = sequences[0][0]
         caption = tokenizer.decode(best_seq, skip_special_tokens=True)
         return caption
+  
+    def apply_no_repeat_ngram(logits, history_tokens, ngram_size=2):
+      """
+      Hàm chặn lặp từ (N-gram Blocking).
+      - logits: Điểm số dự đoán của bước hiện tại [vocab_size]
+      - history_tokens: List các token id đã sinh ra trước đó
+      - ngram_size: Kích thước cụm từ muốn chặn (VD: 2 nghĩa là cấm lặp lại cặp từ liên tiếp)
+      """
+      if len(history_tokens) < ngram_size - 1:
+          return logits # Chưa đủ dài để check, bỏ qua
+
+      # Lấy (N-1) từ cuối cùng vừa sinh ra làm "tiền tố"
+      prefix = tuple(history_tokens[-(ngram_size - 1):])
+
+      # Quét lại toàn bộ lịch sử để xem "tiền tố" này từng xuất hiện ở đâu
+      # Và từ gì đã đi theo sau nó?
+      banned_indices = set()
+      for i in range(len(history_tokens) - ngram_size + 1):
+          # Kiểm tra đoạn token trong quá khứ
+          past_gram = tuple(history_tokens[i : i + ngram_size - 1])
+          
+          # Nếu đoạn quá khứ giống hệt đoạn hiện tại
+          if past_gram == prefix:
+              # Thì cái từ đi sau đoạn quá khứ đó là "từ cấm"
+              banned_token = history_tokens[i + ngram_size - 1]
+              banned_indices.add(banned_token)
+
+      # Gán logit của các từ cấm thành âm vô cùng (để Softmax ra 0%)
+      for idx in banned_indices:
+          logits[idx] = -float('inf')
+
+      return logits

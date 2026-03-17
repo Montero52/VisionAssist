@@ -1,5 +1,4 @@
 from torch import nn
-import torch.nn.functional as F
 
 class FFN(nn.Module):
     def __init__(self, dim, ff_dim, dropout=0.1):
