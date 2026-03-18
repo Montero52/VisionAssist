@@ -152,6 +152,14 @@ async function captureAndSend() {
             distLine.className = "danger"; 
             document.body.style.backgroundColor = "#ffecec"; 
             isDanger = true;
+    
+            // ---- BỔ SUNG 3 DÒNG NÀY ----
+            // Nếu đang quét nhanh mà thấy vật cản, ép chu kỳ tiếp theo phải là FULL
+            if (mode === "distance_only") {
+                tickCount = FULL_EVERY_N_TICKS - 1; 
+            }
+            // ----------------------------
+    
         } else {
             textDist.innerText = (selectedLang === "en")
                 ? ("Distance: " + result.distance)
@@ -165,8 +173,13 @@ async function captureAndSend() {
         smartSpeak(result.final_speech, captionOnly, isDanger);
 
     } catch (error) {
-        console.error("Lỗi:", error);
-        status.innerText = "Lỗi kết nối Server.";
+        // Bắt lỗi khi mất kết nối Server
+        if (error.message.includes('Failed to fetch')) {
+            console.warn("Mất kết nối tới Server. Đang thử lại...");
+            document.getElementById('status').innerText = "Mất kết nối Server. Đang chờ...";
+        } else {
+            console.error("Lỗi hệ thống:", error);
+        }
     } finally {
         isProcessing = false;
     }
