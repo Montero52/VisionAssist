@@ -17,13 +17,21 @@
             <option value="m">m (Mét)</option>
         </select>
     </div>
+    
+    <div style="margin-bottom: 15px;">
+        <label for="langSelect">Chọn ngôn ngữ:</label>
+        <select id="langSelect">
+            <option value="vi" selected>Tiếng Việt</option>
+            <option value="en">English</option>
+        </select>
+    </div>
 
     <video id="webcam" autoplay playsinline></video>
     <canvas id="canvas" style="display:none;"></canvas>
     
     <div id="result">
         <p id="dist-line"><span id="text-dist">Đang đo...</span></p>
-        <p id="caption-detail">VI: <span id="text-vi">Đang chờ...</span></p>
+        <p id="caption-detail"><span id="lang-label">VI</span>: <span id="text-vi">Đang chờ...</span></p>
     </div>
 
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>

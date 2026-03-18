@@ -3,8 +3,9 @@ import numpy as np
 import io
 import base64
 import os
-import gc # Quản lý bộ nhớ
+import gc
 import cv2
+from collections import OrderedDict
 
 from PIL import Image
 from transformers import T5Tokenizer
@@ -32,6 +33,30 @@ CORS(app)
 # ==========================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Đang chạy Server trên thiết bị: {device.upper()}")
+
+# ==========================================
+# 1.5 CACHE DỊCH (GIẢM ĐỘ TRỄ + TĂNG ỔN ĐỊNH)
+# ==========================================
+TRANSLATION_CACHE_MAX = 256
+translation_cache = OrderedDict()
+request_counter = 0
+
+def translate_en_to_vi_cached(text_en: str) -> str:
+    key = (text_en or "").strip().lower()
+    if not key:
+        return text_en
+
+    cached = translation_cache.get(key)
+    if cached is not None:
+        translation_cache.move_to_end(key)
+        return cached
+
+    vi = GoogleTranslator(source="en", target="vi").translate(key)
+    translation_cache[key] = vi
+    translation_cache.move_to_end(key)
+    if len(translation_cache) > TRANSLATION_CACHE_MAX:
+        translation_cache.popitem(last=False)
+    return vi
 
 # ==========================================
 # 2. LOAD MODEL CAPTIONING (ViT-T5)
@@ -85,7 +110,7 @@ else:
 image_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.685, 0.656, 0.606], std=[0.229, 0.224, 0.225])
 ])
 
 # ==========================================
@@ -127,12 +152,17 @@ def predict():
     img_tensor = None
     
     try:
+        global request_counter
+        request_counter += 1
+
         # A. Nhận dữ liệu
         data = request.json
         if not data or 'image' not in data:
             return jsonify({'error': 'No image provided'}), 400
             
         unit_pref = data.get('unit', 'cm')
+        lang = (data.get('lang', 'vi') or 'vi').lower()  # "vi" | "en"
+        mode = (data.get('mode', 'full') or 'full').lower()  # "full" | "distance_only"
         
         # B. Decode ảnh Base64
         image_data = data['image'].split(",")[1]
@@ -155,49 +185,85 @@ def predict():
         dist_value, dist_label = format_distance_output(distance_meters, unit_pref)
         dist_display_text = f"{dist_value}{dist_label}"
         
-        # ---------------------------------------------------------
-        # D. SINH CAPTION (MÔ TẢ ẢNH)
-        # ---------------------------------------------------------
-        img_tensor = image_transform(pil_image).unsqueeze(0).to(device)
-        max_len_cfg = trans_cfg.get('max_len', 30)
+        caption_en = ""
+        caption_text = ""  # ngôn ngữ theo lang: vi hoặc en
 
-        with torch.no_grad():
-            caption_en = model_custom.beam_search(
-                img_tensor, 
-                tokenizer, 
-                beam_size=3,             
-                max_len=max_len_cfg,     
-                device=device,
-                no_repeat_ngram_size=2,  
-                repetition_penalty=1.0   
-            )
-        
-        # Dịch sang Tiếng Việt
-        try:
-            caption_vi = GoogleTranslator(source='en', target='vi').translate(caption_en.lower())
-        except Exception:
-            caption_vi = caption_en # Fallback nếu lỗi mạng
+        # ---------------------------------------------------------
+        # D. SINH CAPTION (MÔ TẢ ẢNH) - CHỈ KHI mode=full
+        # ---------------------------------------------------------
+        if mode == "full":
+            img_tensor = image_transform(pil_image).unsqueeze(0).to(device)
+            # CPU-friendly
+            max_len_cfg = min(25, int(trans_cfg.get('max_len', 40)))
+
+            with torch.no_grad():
+                caption_en = model_custom.beam_search(
+                    img_tensor,
+                    tokenizer,
+                    beam_size=1,
+                    max_len=max_len_cfg,
+                    device=device,
+                    no_repeat_ngram_size=2,
+                    repetition_penalty=1.0
+                )
+
+            if lang == "en":
+                caption_text = (caption_en or "").strip()
+            else:
+                try:
+                    caption_text = translate_en_to_vi_cached(caption_en)
+                except Exception:
+                    caption_text = caption_en  # fallback nếu lỗi mạng
+        else:
+            caption_text = ""
 
         # ---------------------------------------------------------
         # E. TẠO CÂU NÓI & CẢNH BÁO (LOGIC MỚI)
         # ---------------------------------------------------------
         warning_msg = ""
-        
-        # Logic ghép câu nói tự nhiên: [Cảnh báo] + [Vị trí] + [Vật thể] + [Khoảng cách]
-        if distance_meters < 0.8:
-            warning_msg = "CẢNH BÁO! RẤT GẦN"
-            # Vd: "Nguy hiểm! Bên trái có Cái ghế. Cách 50 xăng-ti-mét"
-            final_speech = f"Nguy hiểm! {position_text} có {caption_vi}. Cách {dist_display_text}"
-        elif distance_meters < 1.5:
-            final_speech = f"Khá gần. {position_text} là {caption_vi}. Cách {dist_display_text}"
+
+        if mode != "full":
+            # Distance-only: nói hướng + khoảng cách + cảnh báo
+            if lang == "en":
+                if distance_meters < 0.6:
+                    warning_msg = "WARNING! VERY CLOSE"
+                    final_speech = f"Danger! {position_text}. {dist_display_text}."
+                elif distance_meters < 1.5:
+                    final_speech = f"Nearby. {position_text}. {dist_display_text}."
+                else:
+                    final_speech = f"{position_text}. {dist_display_text}."
+            else:
+                if distance_meters < 0.6:
+                    warning_msg = "CẢNH BÁO! RẤT GẦN"
+                    final_speech = f"Nguy hiểm! {position_text}. Cách {dist_display_text}."
+                elif distance_meters < 1.5:
+                    final_speech = f"Khá gần. {position_text}. Cách {dist_display_text}."
+                else:
+                    final_speech = f"{position_text}. Cách {dist_display_text}."
         else:
-            final_speech = f"{caption_vi}. {position_text} cách {dist_display_text}"
+            # Full: có caption
+            if lang == "en":
+                if distance_meters < 0.6:
+                    warning_msg = "WARNING! VERY CLOSE"
+                    final_speech = f"Danger! {position_text} has {caption_text}. {dist_display_text}."
+                elif distance_meters < 1.5:
+                    final_speech = f"Nearby. {position_text} is {caption_text}. {dist_display_text}."
+                else:
+                    final_speech = f"{caption_text}. {position_text}. {dist_display_text}."
+            else:
+                if distance_meters < 0.6:
+                    warning_msg = "CẢNH BÁO! RẤT GẦN"
+                    final_speech = f"Nguy hiểm! {position_text} có {caption_text}. Cách {dist_display_text}"
+                elif distance_meters < 1.5:
+                    final_speech = f"Khá gần. {position_text} là {caption_text}. Cách {dist_display_text}"
+                else:
+                    final_speech = f"{caption_text}. {position_text} cách {dist_display_text}"
 
         # ---------------------------------------------------------
         # F. TRẢ VỀ JSON
         # ---------------------------------------------------------
         response = {
-            'caption_vi': caption_vi,
+            'caption_vi': caption_text,
             'distance': dist_display_text,
             'position': position_text,      # Trả về hướng (Trái/Phải/Trước)
             'warning': warning_msg,
@@ -216,27 +282,26 @@ def predict():
         # ---------------------------------------------------------
         # G. DỌN DẸP BỘ NHỚ (LUÔN CHẠY)
         # ---------------------------------------------------------
-        # Xóa biến
-        del pil_image
-        del cv_image
-        del img_tensor
-        
-        # Dọn GPU/CPU
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        # Tránh del biến chưa được gán khi có exception sớm
+        pil_image = None
+        cv_image = None
+        img_tensor = None
+
+        # CPU: chỉ gc theo chu kỳ để giảm jitter
+        if request_counter % 50 == 0:
+            gc.collect()
 
 # ==========================================
 # 6. CHẠY SERVER
 # ==========================================
-# if __name__ == '__main__':
-#     from waitress import serve
-#     print("\n" + "="*50)
-#     print("SERVER ĐANG CHẠY TẠI: http://0.0.0.0:5000")
-#     print("Chế độ: Production (Waitress - Multi-thread)")
-#     print("="*50 + "\n")
-    
-#     serve(app, host='0.0.0.0', port=5000, threads=4)
-
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    from waitress import serve
+    print("\n" + "="*50)
+    print("SERVER ĐANG CHẠY TẠI: http://127.0.0.1:5000")
+    print("Chế độ: Production (Waitress - Multi-thread)")
+    print("="*50 + "\n")
+    
+    serve(app, host='0.0.0.0', port=5000, threads=4)
+
+# if __name__ == '__main__':
+#     app.run(debug=True, host='0.0.0.0', port=5000)
