@@ -6,6 +6,7 @@ import os
 import gc
 import cv2
 from collections import OrderedDict
+import time
 
 from PIL import Image
 from transformers import T5Tokenizer
@@ -125,6 +126,36 @@ except Exception as e:
     exit(1)
 
 # ==========================================
+# 3.5 WARMUP (GIẢM GIẬT REQUEST ĐẦU TRÊN CPU)
+# ==========================================
+def warmup_models():
+    try:
+        print(">> Warmup models (CPU)...")
+        dummy_np = np.zeros((240, 320, 3), dtype=np.uint8)
+        dummy_pil = Image.fromarray(dummy_np, mode="RGB")
+
+        # Warmup Depth
+        _ = dist_calc.estimate_distance(dummy_np)
+
+        # Warmup Caption (không dịch)
+        dummy_tensor = image_transform(dummy_pil).unsqueeze(0).to(device)
+        _ = model_custom.beam_search(
+            dummy_tensor,
+            tokenizer,
+            beam_size=1,
+            max_len=10,
+            device=device,
+            no_repeat_ngram_size=2,
+            repetition_penalty=1.0
+        )
+
+        print(">> Warmup 완료.")
+    except Exception as e:
+        print(f">> Warmup skipped: {e}")
+
+warmup_models()
+
+# ==========================================
 # 4. HÀM XỬ LÝ PHỤ TRỢ
 # ==========================================
 def format_distance_output(distance_m, unit_str):
@@ -154,6 +185,7 @@ def predict():
     try:
         global request_counter
         request_counter += 1
+        t0 = time.perf_counter()
 
         # A. Nhận dữ liệu
         data = request.json
@@ -179,7 +211,9 @@ def predict():
         # C. TÍNH KHOẢNG CÁCH & VỊ TRÍ (UPDATE QUAN TRỌNG)
         # ---------------------------------------------------------
         # Gọi hàm mới trả về 3 giá trị
+        t_dist0 = time.perf_counter()
         distance_meters, position_text, box_coords = dist_calc.estimate_distance(cv_image)
+        t_dist1 = time.perf_counter()
         
         # Format đơn vị (m/cm/dm)
         dist_value, dist_label = format_distance_output(distance_meters, unit_pref)
@@ -192,6 +226,7 @@ def predict():
         # D. SINH CAPTION (MÔ TẢ ẢNH) - CHỈ KHI mode=full
         # ---------------------------------------------------------
         if mode == "full":
+            t_cap0 = time.perf_counter()
             img_tensor = image_transform(pil_image).unsqueeze(0).to(device)
             # CPU-friendly
             max_len_cfg = min(25, int(trans_cfg.get('max_len', 40)))
@@ -214,8 +249,11 @@ def predict():
                     caption_text = translate_en_to_vi_cached(caption_en)
                 except Exception:
                     caption_text = caption_en  # fallback nếu lỗi mạng
+            t_cap1 = time.perf_counter()
         else:
             caption_text = ""
+            t_cap0 = None
+            t_cap1 = None
 
         # ---------------------------------------------------------
         # E. TẠO CÂU NÓI & CẢNH BÁO (LOGIC MỚI)
@@ -270,6 +308,14 @@ def predict():
             'final_speech': final_speech,
             'unit_used': dist_label,
             'box': box_coords               # Trả về tọa độ [x1, y1, x2, y2] để vẽ
+        }
+
+        # Timing nhẹ (không ảnh hưởng UI nếu bạn không dùng)
+        t1 = time.perf_counter()
+        response["timing_ms"] = {
+            "total": round((t1 - t0) * 1000, 1),
+            "distance": round((t_dist1 - t_dist0) * 1000, 1),
+            "caption": round((t_cap1 - t_cap0) * 1000, 1) if (t_cap0 is not None and t_cap1 is not None) else 0.0
         }
         
         return jsonify(response)
