@@ -30,3 +30,7 @@ ENV/
 *.log
 *.sqlite
 *.db
+
+.roo/
+plans/
+.repomixignore

@@ -6,6 +6,7 @@ import nltk
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import logging
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from transformers import T5Tokenizer
@@ -14,12 +15,23 @@ from torch.utils.data import Subset
 from nltk.translate.meteor_score import meteor_score
 from torchmetrics.text import BLEUScore
 
-# Import config và modules
-# Lấy đường dẫn tuyệt đối của thư mục chứa file train.py (tức là folder scripts)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("training.log", encoding='utf-8')
+    ]
+)
+logger = logging.getLogger("Training")
+
+# Import config and modules
+# Get absolute path of the directory containing train.py (scripts folder)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# Lấy thư mục cha (thư mục gốc VisionAssist)
+# Get root directory (VisionAssist)
 root_dir = os.path.dirname(current_dir)
-# Thêm thư mục gốc vào hệ thống tìm kiếm của Python
+# Add root directory to Python path
 sys.path.append(root_dir)
 
 from config import vit_cfg, trans_cfg, epochs, image_dir, caption_dir, BASE_DIR
@@ -27,10 +39,10 @@ from src.main.model.model import ViT_Transformer
 from src.data.dataset import JsonCaptionsDataset
 from src.utils.utils import save_checkpoint
 
-# --- [AMP] Import thư viện Mixed Precision ---
+# --- [AMP] Import Mixed Precision library ---
 from torch.cuda.amp import GradScaler, autocast
 
-# --- HÀM TRAIN ---
+# --- TRAINING FUNCTION ---
 def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler):
     model.train()
     total_loss = 0
@@ -39,7 +51,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     # T5 Start Token = 0
     start_token_id = 0 
     
-    print(f"\n[INFO] Bat dau Epoch {epoch+1}...")
+    logger.info(f"Starting Epoch {epoch+1}...")
     
     for batch_idx, batch in enumerate(dataloader):
         images = batch['image'].to(device)
@@ -47,16 +59,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         full_tokens = batch['decoder_input_ids'].to(device) 
         full_mask   = batch['attention_mask'].to(device)
         
-        # 1. Tao Targets (Thay 0 bang -100 de bo qua khi tinh Loss)
+        # 1. Create Targets (Replace 0 with -100 to ignore in Loss calculation)
         targets = full_tokens.clone()
         targets[targets == 0] = -100 
         
-        # 2. Tao Decoder Input (Them Start Token vao dau)
+        # 2. Create Decoder Input (Prepend Start Token)
         batch_size = full_tokens.size(0)
         start_col = torch.full((batch_size, 1), start_token_id, device=device, dtype=torch.long)
         decoder_input = torch.cat([start_col, full_tokens[:, :-1]], dim=1)
         
-        # 3. Tao Mask cho Decoder Input
+        # 3. Create Mask for Decoder Input
         mask_col = torch.full((batch_size, 1), 1, device=device, dtype=torch.long)
         attention_mask = torch.cat([mask_col, full_mask[:, :-1]], dim=1)
         
@@ -77,33 +89,33 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
         total_loss += loss.item()
 
-        # In log moi 100 batch de tranh spam man hinh
+        # Log every 100 batches to avoid flooding
         if batch_idx % 100 == 0:
-            print(f"Epoch [{epoch+1}], Step [{batch_idx}/{len(dataloader)}], Loss: {loss.item():.4f}")
+            logger.info(f"Epoch [{epoch+1}], Step [{batch_idx}/{len(dataloader)}], Loss: {loss.item():.4f}")
 
     avg_loss = total_loss / len(dataloader)
     end_time = time.time()
-    print(f"=== Ket thuc Epoch {epoch+1} | Loss TB: {avg_loss:.4f} | Thoi gian: {end_time - start_time:.2f}s ===")
+    logger.info(f"=== Finished Epoch {epoch+1} | Avg Loss: {avg_loss:.4f} | Time: {end_time - start_time:.2f}s ===")
     return avg_loss
 
-# --- TAI NLTK ---
+# --- DOWNLOAD NLTK DATA ---
 try:
     nltk.data.find('corpora/wordnet.zip')
     nltk.data.find('corpora/omw-1.4.zip')
     nltk.data.find('tokenizers/punkt')
     nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
-    print("[INFO] Dang tai du lieu NLTK...")
+    logger.info("Downloading NLTK data...")
     nltk.download('wordnet')
     nltk.download('omw-1.4')
     nltk.download('punkt')
     nltk.download('punkt_tab')
 
-# --- HÀM EVALUATE ---
+# --- EVALUATE FUNCTION ---
 def evaluate_model(model, dataloader, criterion, tokenizer, device):
     model.eval()
     
-    # Bien luu Val Loss
+    # Store Val Loss
     total_val_loss = 0
     
     bleu4_metric = BLEUScore(n_gram=4)
@@ -111,16 +123,16 @@ def evaluate_model(model, dataloader, criterion, tokenizer, device):
     targets_str = []
     meteor_scores = []
     
-    # Token dac biet cho tinh Loss
+    # Special token for loss calculation
     start_token_id = 0 
     
-    print("\n[INFO] Dang chay danh gia (Evaluation & Calc Loss)...")
+    logger.info("Running evaluation (Calc Loss & Metrics)...")
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
             images = batch['image'].to(device)
             raw_captions = batch['raw_text'] 
             
-            # --- PHAN 1: TINH VAL LOSS ---
+            # --- PART 1: CALC VAL LOSS ---
             full_tokens = batch['decoder_input_ids'].to(device) 
             full_mask   = batch['attention_mask'].to(device)
             
@@ -134,7 +146,7 @@ def evaluate_model(model, dataloader, criterion, tokenizer, device):
             mask_col = torch.full((batch_size, 1), 1, device=device, dtype=torch.long)
             attention_mask = torch.cat([mask_col, full_mask[:, :-1]], dim=1)
             
-            # Forward tinh Loss
+            # Forward for Loss calculation
             with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                 outputs = model(images, decoder_input, padding_mask=attention_mask)
                 output_dim = outputs.shape[-1]
@@ -142,18 +154,18 @@ def evaluate_model(model, dataloader, criterion, tokenizer, device):
             
             total_val_loss += loss.item()
 
-            # --- PHAN 2: SINH CAPTION & TINH DIEM ---
+            # --- PART 2: GENERATE CAPTION & CALC SCORES ---
             if batch_idx == 0:
-                print(f"\n--- KET QUA MAU TAI BATCH 0 ---")
+                logger.info("--- SAMPLE RESULTS AT BATCH 0 ---")
                 num_show = min(len(images), 3) 
                 for i in range(num_show):
                     img_tensor = images[i].unsqueeze(0)
                     generated_cap = model.beam_search(img_tensor, tokenizer, beam_size=3, max_len=30, device=device)
 
-                    print(f" Anh ID: {batch['image_id'][i] if 'image_id' in batch else 'Unknown'}")
-                    print(f" Model:   '{generated_cap}'")
-                    print(f" Dap an:  '{raw_captions[i]}'")
-                    print("-------------------------------------------------")
+                    logger.info(f" Image ID: {batch['image_id'][i] if 'image_id' in batch else 'Unknown'}")
+                    logger.info(f" Model:   '{generated_cap}'")
+                    logger.info(f" Ground Truth:  '{raw_captions[i]}'")
+                    logger.info("-------------------------------------------------")
                     
                     preds_str.append(generated_cap)
                     targets_str.append([raw_captions[i]])
@@ -179,7 +191,7 @@ def evaluate_model(model, dataloader, criterion, tokenizer, device):
                     meteor_scores.append(score)
 
             if batch_idx % 20 == 0:
-                print(f"   Dang danh gia... {batch_idx}/{len(dataloader)}")
+                logger.info(f"   Evaluating... {batch_idx}/{len(dataloader)}")
 
     avg_val_loss = total_val_loss / len(dataloader)
     score_bleu4 = bleu4_metric(preds_str, targets_str).item()
@@ -189,9 +201,9 @@ def evaluate_model(model, dataloader, criterion, tokenizer, device):
 
 # --- MAIN ---
 def main():
-    # 1. Cau hinh thiet bi
+    # 1. Device configuration
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Dang su dung thiet bi: {device}")
+    logger.info(f"Using device: {device}")
     
     checkpoint_dir = os.path.join(BASE_DIR, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -202,14 +214,14 @@ def main():
     tokenizer = T5Tokenizer.from_pretrained("t5-base", legacy=False)
     
     real_vocab_size = len(tokenizer)
-    print(f"[INFO] T5 Vocab Size: {real_vocab_size}")
+    logger.info(f"T5 Vocab Size: {real_vocab_size}")
     trans_cfg['vocab_size'] = real_vocab_size 
 
-    # 3. Khoi tao Model
-    print("[INFO] Dang khoi tao Model...")
+    # 3. Initialize Model
+    logger.info("Initializing Model...")
     model = ViT_Transformer(vit_cfg, trans_cfg, vocab_size=real_vocab_size).to(device)
     
-    # 4. Transform
+    # 4. Transforms
     train_transforms = transforms.Compose([
         transforms.Resize((256, 256)),               
         transforms.RandomCrop((224, 224)),           
@@ -242,7 +254,7 @@ def main():
         max_len=trans_cfg['max_len']
     )
 
-    print(f"[INFO] DANG CHAY CHE DO FULL DATASET ({len(train_dataset)} anh)")
+    logger.info(f"RUNNING IN FULL DATASET MODE ({len(train_dataset)} images)")
     
     BATCH_SIZE = 16 
     num_workers = 2
@@ -251,7 +263,7 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=num_workers)
 
     # 6. Unfreeze & Optimizer
-    print("[INFO] CAU HINH: UNFREEZE ALL")
+    logger.info("CONFIGURATION: UNFREEZE ALL")
     for param in model.parameters():
         param.requires_grad = True
 
@@ -268,7 +280,7 @@ def main():
     resume_path = os.path.join(checkpoint_dir, "last_model.pth")
 
     if os.path.exists(resume_path):
-        print(f"[INFO] Phat hien checkpoint cu tai {resume_path}. Dang khoi phuc...")
+        logger.info(f"Old checkpoint detected at {resume_path}. Restoring...")
         checkpoint = torch.load(resume_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -282,12 +294,12 @@ def main():
         if os.path.exists(history_path):
             with open(history_path, 'r') as f:
                 history = json.load(f)
-        print(f"[INFO] Da khoi phuc! Tiep tuc train tu Epoch {start_epoch+1}. Best BLEU: {best_bleu:.4f}")
+        logger.info(f"Restored! Continuing training from Epoch {start_epoch+1}. Best BLEU: {best_bleu:.4f}")
     else:
-        print("[INFO] Khong tim thay checkpoint cu. Bat dau train moi.")
+        logger.info("No old checkpoint found. Starting fresh training.")
 
     # 8. Loop
-    print(f">>> BAT DAU HUAN LUYEN TREN {len(train_dataset)} ANH (EPOCHS: {epochs}) <<<")
+    logger.info(f">>> STARTING TRAINING ON {len(train_dataset)} IMAGES (EPOCHS: {epochs}) <<<")
     
     for epoch in range(start_epoch, epochs):
         # A. Train
@@ -299,11 +311,11 @@ def main():
         if (epoch + 1) % 1 == 0:
             val_loss, bleu4, meteor = evaluate_model(model, val_loader, criterion, tokenizer, device)
             
-            print(f"Ket qua Epoch {epoch+1}:")
-            print(f"   Train Loss: {train_loss:.4f}")
-            print(f"   Val Loss:   {val_loss:.4f}") 
-            print(f"   BLEU-4:     {bleu4:.4f}")
-            print(f"   METEOR:     {meteor:.4f}")
+            logger.info(f"Results Epoch {epoch+1}:")
+            logger.info(f"   Train Loss: {train_loss:.4f}")
+            logger.info(f"   Val Loss:   {val_loss:.4f}") 
+            logger.info(f"   BLEU-4:     {bleu4:.4f}")
+            logger.info(f"   METEOR:     {meteor:.4f}")
 
             scheduler.step(val_loss)
 
@@ -320,7 +332,7 @@ def main():
                     'best_bleu': best_bleu
                 }
                 torch.save(save_data, best_ckpt_path)
-                print(f"Model Tot Nhat Moi! (BLEU: {best_bleu:.4f}) -> {best_ckpt_path}")
+                logger.info(f"New Best Model! (BLEU: {best_bleu:.4f}) -> {best_ckpt_path}")
 
             last_ckpt_path = os.path.join(checkpoint_dir, "last_model.pth")
             torch.save({
@@ -332,7 +344,7 @@ def main():
                 'loss': train_loss,
                 'best_bleu': best_bleu
             }, last_ckpt_path)
-            print(f"   Da luu checkpoint dinh ky tai Epoch {epoch+1}")
+            logger.info(f"   Saved periodic checkpoint at Epoch {epoch+1}")
 
         # D. Log
         history["epochs"].append(epoch + 1)
@@ -343,15 +355,14 @@ def main():
         
         with open(history_path, 'w') as f:
             json.dump(history, f, indent=4)
-        print(f"Da cap nhat log vao: {history_path}")
+        logger.info(f"Updated logs in: {history_path}")
 
         # E. Backup
         if (epoch + 1) % 1 == 0:
             backup_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch+1}.pth")
             torch.save(model.state_dict(), backup_path)
 
-    print("HOAN THANH HUAN LUYEN!")
+    logger.info("TRAINING COMPLETED!")
 
-# --- QUAN TRỌNG: CHẮC CHẮN DÒNG NÀY PHẢI SÁT LỀ TRÁI ---
 if __name__ == "__main__":
     main()

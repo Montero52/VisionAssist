@@ -2,118 +2,125 @@ import json
 import random
 import os
 import sys
+import logging
 
-# --- 1. IMPORT TỪ CONFIG ---
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("Split-Data")
+
+# --- 1. IMPORT FROM CONFIG ---
 try:
-    # Import biến caption_dir từ file config.py
-    # Biến này giúp xác định folder đang chứa dữ liệu (Flickr30k hay 8k)
+    # Import caption_dir from config.py
+    # This helps identify the folder containing data (Flickr30k or 8k)
     from config import caption_dir
 except ImportError:
-    print("Lỗi: Không tìm thấy file config.py. Hãy đặt file này ngang hàng với config.py")
+    logger.error("Error: config.py not found. Please place this file in the root directory.")
     sys.exit(1)
 
-# --- 2. THIẾT LẬP ĐƯỜNG DẪN TỰ ĐỘNG ---
-# Xử lý linh hoạt dù caption_dir là thư mục hay trỏ vào file
+# --- 2. AUTOMATIC PATH SETUP ---
+# Handle cases where caption_dir is a directory or points to a file
 if os.path.isdir(caption_dir):
     WORK_DIR = caption_dir
 else:
     WORK_DIR = os.path.dirname(caption_dir)
 
-# File đầu vào: Là file JSON tổng vừa tạo từ convert_captions.py
-# (Mặc định tên là captions.json)
+# Input file: Total JSON file created from convert_captions.py
+# (Default name is captions.json)
 INPUT_FILE = os.path.join(WORK_DIR, "captions.json")
 
-# Thư mục đầu ra: Lưu ngay tại đó luôn
+# Output directory: Save in the same location
 OUTPUT_DIR = WORK_DIR
 
 def split_dataset(input_path, output_dir, train_ratio=0.8, val_ratio=0.1):
     """
-    Hàm chia file JSON lớn thành 3 file con: Train, Val, Test.
+    Splits a large JSON file into 3 sub-files: Train, Val, Test.
     """
     
-    # 1. Kiểm tra file đầu vào
+    # 1. Check input file
     if not os.path.exists(input_path):
-        print(f"LỖI: Không tìm thấy file nguồn tại: {input_path}")
-        print("   -> Bạn đã chạy 'convert_captions.py' chưa?")
+        logger.error(f"ERROR: Source file not found at: {input_path}")
+        logger.error("   -> Did you run 'convert_captions.py'?")
         return
 
-    print(f"Đang đọc dữ liệu từ: {input_path}")
+    logger.info(f"Reading data from: {input_path}")
     
     try:
         with open(input_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception as e:
-        print(f"LỖI: Không đọc được file JSON. Chi tiết: {e}")
+        logger.error(f"ERROR: Could not read JSON file. Details: {e}")
         return
     
-    # Lấy danh sách ảnh (Xử lý linh hoạt)
-    # File convert_captions.py của chúng ta tạo ra List of Dicts, nên thường sẽ rơi vào else hoặc elif
+    # Get image list (Flexible handling)
     if isinstance(data, dict) and 'images' in data:
         images = data['images']
     elif isinstance(data, list):
         images = data
     else:
-        print("LỖI: Cấu trúc JSON không hợp lệ (không tìm thấy list ảnh).")
+        logger.error("ERROR: Invalid JSON structure (image list not found).")
         return
 
-    # 2. Xáo trộn dữ liệu (Shuffle)
-    print("Đang xáo trộn dữ liệu...")
+    # 2. Shuffle data
+    logger.info("Shuffling data...")
     random.seed(42) 
     random.shuffle(images)
     
-    # 3. Tính toán số lượng
+    # 3. Calculate split sizes
     total = len(images)
     n_train = int(total * train_ratio)
     n_val = int(total * val_ratio)
-    # n_test là phần còn lại
+    # n_test is the remainder
     
     train_data = images[:n_train]
     val_data = images[n_train : n_train + n_val]
     test_data = images[n_train + n_val:]
     
-    print(f"Tổng số ảnh tìm thấy: {total}")
-    print(f"   - Train (80%): {len(train_data)} ảnh")
-    print(f"   - Val   (10%): {len(val_data)} ảnh")
-    print(f"   - Test  (10%): {len(test_data)} ảnh")
+    logger.info(f"Total images found: {total}")
+    logger.info(f"   - Train (80%): {len(train_data)} images")
+    logger.info(f"   - Val   (10%): {len(val_data)} images")
+    logger.info(f"   - Test  (10%): {len(test_data)} images")
     
-    # 4. Tạo thư mục đầu ra nếu chưa có
+    # 4. Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
-    # Hàm hỗ trợ lưu file
+    # Helper to save JSON file
     def save_json(data_list, filename):
         file_path = os.path.join(output_dir, filename)
         
-        # Nếu data gốc có cấu trúc lồng, giữ nguyên cấu trúc đó
+        # If original data has nested structure, preserve it
         if isinstance(data, dict) and 'images' in data:
             final_content = {'images': data_list}
             for k, v in data.items():
                 if k != 'images':
                     final_content[k] = v
         else:
-            final_content = data_list # List phẳng
+            final_content = data_list # Flat list
             
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(final_content, f, ensure_ascii=False, indent=2)
-        print(f"   -> Đã lưu: {filename}")
+        logger.info(f"   -> Saved: {filename}")
 
-    # Thực hiện lưu
-    print("Đang lưu 3 file con...")
+    # Perform save
+    logger.info("Saving split files...")
     save_json(train_data, 'train_captions.json')
     save_json(val_data, 'val_captions.json')
     save_json(test_data, 'test_captions.json')
     
-    print(f"\nHOÀN TẤT! Các file đã sẵn sàng tại: {output_dir}")
-    print("   Bây giờ bạn có thể chạy 'python train.py'!")
+    logger.info(f"COMPLETED! Files are ready at: {output_dir}")
+    logger.info("   You can now run 'python train.py'!")
 
 # --- MAIN ---
 if __name__ == "__main__":
-    print(f"Config đang trỏ tới: {WORK_DIR}")
+    logger.info(f"Config pointing to: {WORK_DIR}")
     
-    # Nếu file captions.json không tồn tại, thử tìm tên cũ captions.json
+    # Check if input file exists
     if not os.path.exists(INPUT_FILE):
-        fallback_file = os.path.join(WORK_DIR, "captions.json")
-        if os.path.exists(fallback_file):
-            print(f"Không thấy 'captions.json', đang dùng 'captions.json'")
-            INPUT_FILE = fallback_file
+        logger.warning(f"File '{INPUT_FILE}' not found. Please ensure captions are converted.")
             
     split_dataset(INPUT_FILE, OUTPUT_DIR)

@@ -1,0 +1,33 @@
+# Python & Môi trường
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Trọng số model & Media (Cực kỳ quan trọng cho CV)
+*.pt
+*.pth
+*.onnx
+*.weights
+*.h5
+*.mp4
+*.avi
+*.jpg
+*.png
+
+# Git & Cấu hình IDE
+.git/
+.vscode/
+.idea/
+
+# Thư mục dữ liệu thô
+data/
+datasets/
+runs/
+
+.roo/
+plans/
+tests/
+README.md
+.LiCENSE

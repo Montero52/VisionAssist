@@ -1,0 +1,56 @@
+# VisionAssist Project Rules
+# This file formalizes the rules proposed in plans/visionassist_rules.md.
+
+## Language Policy
+- **Communication & Reasoning:** Always explain and reason in Vietnamese.
+- **Code & Comments:** All source code, variables, functions, and inline comments MUST be written in English.
+
+## Technical Stack
+- **Backend**: Python (Flask)
+- **AI Frameworks**: PyTorch (Training/Development), **OpenVINO™ Toolkit (Production Inference)**, Transformers, OpenCV, NLTK
+- **Inference Engine**: Optimized for Intel® Core™ i5-10300H CPU and Integrated GPU (iGPU).
+- **Models**:
+  - Encoder: ViT (`vit_base_patch16_224`)
+  - Decoder: Custom Transformer (T5-style)
+  - Depth: Depth-Anything-V2-Small
+- **Frontend**: Vanilla JS, HTML5, CSS3 (using Web Speech API for TTS)
+
+## Coding Standards & Best Practices
+### Python (Backend)
+- **Modularity**: Organize code into semantic modules (e.g., `src/main/encode`, `src/main/decode`, `src/main/model`).
+- **Type Hints (STRICT)**: ALL Python functions MUST include strict Type Hints for arguments and return values (e.g., `def process(img: np.ndarray) -> str:`).
+- **Configuration**: Always use `config.py` for global settings, model parameters, and path management.
+- **OpenVINO Device Strategy**: 
+    - Always use `ov.Core().compile_model(model, device_name="AUTO")`. 
+    - The "AUTO" mode will automatically balance workload between CPU and iGPU.
+- **Inference Optimization**: 
+    - Wrap all inference in `with torch.no_grad():`.
+    - Use OpenVINO's `AsyncInferQueue` if real-time latency exceeds 100ms to prevent UI blocking.
+- **Resource Lifecycle**: Use `gc.collect()` periodically (e.g., every 50 requests) to prevent memory leaks on 8GB RAM.
+- **Error Resilience**: Implement robust error handling for external dependencies (translations, NLTK downloads).
+- **Caching**: Utilize `OrderedDict` for translation caching to minimize latency.
+- **Professional Logging**: Use Python's `logging` module instead of `print()`. Always log model inference times (Captioning & Depth) to monitor system performance and detect bottlenecks.
+- **Environment Integrity**: Never hardcode absolute paths or sensitive parameters in the source code. All configurations must reside in `config.py` or be loaded from a `.env` file.
+
+### JavaScript (Frontend)
+- **Asynchronous Logic**: Use `async/await` for all API interactions.
+- **TTS Prioritization**: Implement clear logic for TTS interrupts and cooldowns (e.g., higher priority for distance warnings).
+- **Communication Efficiency**: Process and send optimized images (e.g., 320x240 JPEG with 0.5 quality) to maintain low latency.
+
+## Architecture Diagram (Informed by the plan)
+The system flow involves: Webcam Feed -> Frontend -> Flask Backend -> Prediction Mode Selection (FULL/DISTANCE_ONLY) -> Captioning (ViT+Decoder+Translation) OR Depth Estimation -> Response JSON -> TTS -> User Voice Feedback.
+
+## Resource Management
+- **Memory & CPU Preservation**:
+    - **Precision**: Strictly use **INT8** quantization (via OpenVINO NNCF) for all models. Fallback to **FP16** only if accuracy drops significantly. **NEVER use FP32** as it will overwhelm the 8GB RAM and CPU cache.
+    - **Image Pre-processing**: Perform all resizing and normalization using **OpenCV (cv2)** before model input. OpenCV is highly optimized for Intel CPUs via IPP.
+    - **Resource Cleanup**: Explicitly delete large tensors/objects and call `gc.collect()` after heavy processing blocks.
+- **Relative Path Principle (STRICT)**: All paths MUST be defined relative to the project root. Never use absolute paths (e.g., `D:/...`). Use `pathlib` or `os.path` for dynamic path resolution to ensure portability.
+- **Weights & Checkpoints**: Keep all `.pth`, `.pt`, `.onnx`, **`.xml`, and `.bin`** files in the `./checkpoints/` directory.
+- **Datasets & Scripts**:
+      - Data processing scripts belong in `./scripts/`.
+      - JSON annotations and raw data belong in `./src/data/`.
+- **Environment & Security**: Machine-specific paths or sensitive keys must be stored in a `.env` file and managed via `config.py`. Never commit `.env` to version control.
+- **Bilingualism**: Maintain support for both Vietnamese and English in all user-facing strings and TTS outputs.
+- **Dependency Control**: Always prompt the user to update `requirements.txt` whenever a new package is introduced or versioned.
+- **Documentation Alignment**: Ensure that any changes to the system flow are reflected in the `README.md` and Architecture Diagram.

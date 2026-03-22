@@ -5,6 +5,7 @@ import base64
 import os
 import gc
 import cv2
+import logging
 from collections import OrderedDict
 import time
 
@@ -15,34 +16,46 @@ from deep_translator import GoogleTranslator
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 
-# --- IMPORT MODULE DỰ ÁN ---
-# Đảm bảo bạn đã có file config.py và cấu trúc thư mục src/main/...
+# --- LOGGING CONFIGURATION ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("visionassist.log", encoding='utf-8')
+    ]
+)
+logger = logging.getLogger("VisionAssist-Server")
+
+# --- PROJECT MODULE IMPORTS ---
+# Ensure config.py exists and src/main/... directory structure is correct
 try:
     from config import vit_cfg, trans_cfg
     from src.main.model.model import ViT_Transformer
     from src.main.distance import DepthEstimator
 except ImportError as e:
-    print(f"Lỗi Import Module dự án: {e}")
-    print("-> Hãy kiểm tra lại cấu trúc thư mục src/main/...")
+    logger.error(f"Project Module Import Error: {e}")
+    logger.error("-> Please check src/main/ directory structure...")
     exit(1)
 
 app = Flask(__name__)
 CORS(app)
 
 # ==========================================
-# 1. CẤU HÌNH THIẾT BỊ
+# 1. DEVICE CONFIGURATION
 # ==========================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Đang chạy Server trên thiết bị: {device.upper()}")
+logger.info(f"Server running on device: {device.upper()}")
 
 # ==========================================
-# 1.5 CACHE DỊCH (GIẢM ĐỘ TRỄ + TĂNG ỔN ĐỊNH)
+# 1.5 TRANSLATION CACHE (REDUCE LATENCY + INCREASE STABILITY)
 # ==========================================
 TRANSLATION_CACHE_MAX = 256
 translation_cache = OrderedDict()
 request_counter = 0
 
 def translate_en_to_vi_cached(text_en: str) -> str:
+    """Translates English text to Vietnamese with caching."""
     key = (text_en or "").strip().lower()
     if not key:
         return text_en
@@ -52,37 +65,41 @@ def translate_en_to_vi_cached(text_en: str) -> str:
         translation_cache.move_to_end(key)
         return cached
 
-    vi = GoogleTranslator(source="en", target="vi").translate(key)
-    translation_cache[key] = vi
-    translation_cache.move_to_end(key)
-    if len(translation_cache) > TRANSLATION_CACHE_MAX:
-        translation_cache.popitem(last=False)
-    return vi
+    try:
+        vi = GoogleTranslator(source="en", target="vi").translate(key)
+        translation_cache[key] = vi
+        translation_cache.move_to_end(key)
+        if len(translation_cache) > TRANSLATION_CACHE_MAX:
+            translation_cache.popitem(last=False)
+        return vi
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        return text_en
 
 # ==========================================
-# 2. LOAD MODEL CAPTIONING (ViT-T5)
+# 2. LOAD CAPTIONING MODEL (ViT-T5)
 # ==========================================
-print(">> [1/3] Tải Tokenizer...")
+logger.info(">> [1/3] Loading Tokenizer...")
 try:
     tokenizer = T5Tokenizer.from_pretrained("t5-base", legacy=False)
     if tokenizer.bos_token_id is None:
         tokenizer.bos_token_id = tokenizer.pad_token_id
 except Exception as e:
-    print(f"Lỗi Tokenizer: {e}")
+    logger.error(f"Tokenizer Error: {e}")
     exit(1)
 
-print(">> [2/3] Khởi tạo Model ViT-Captioning...")
+logger.info(">> [2/3] Initializing ViT-Captioning Model...")
 model_custom = ViT_Transformer(vit_cfg, trans_cfg, vocab_size=len(tokenizer)).to(device)
 
 # --- Load Checkpoint ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_PATH = os.path.join(BASE_DIR, "checkpoints", "vizwiz_adapted_final.pth")
 
-print(f">> [3/3] Load weights từ: {CHECKPOINT_PATH}")
+logger.info(f">> [3/3] Loading weights from: {CHECKPOINT_PATH}")
 
 if not os.path.exists(CHECKPOINT_PATH):
-    print(f"CẢNH BÁO: Không tìm thấy file model tại {CHECKPOINT_PATH}")
-    # exit(1) # Tạm thời comment để debug nếu chưa có file
+    logger.warning(f"WARNING: Model file not found at {CHECKPOINT_PATH}")
+    # exit(1) # Temporarily commented for debug
 else:
     try:
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
@@ -92,22 +109,22 @@ else:
             model_custom.load_state_dict(checkpoint, strict=False)
         
         model_custom.eval()
-        print("Load Model Captioning thành công!")
+        logger.info("Captioning Model loaded successfully!")
 
-        # Tối ưu hóa cho CPU (Quantization)
+        # CPU Optimization (Quantization)
         if device == "cpu":
-            print("Đang tối ưu hóa Model (Quantization int8) cho CPU...")
+            logger.info("Optimizing Model (INT8 Quantization) for CPU...")
             model_custom = torch.quantization.quantize_dynamic(
                 model_custom, 
                 {torch.nn.Linear},
                 dtype=torch.qint8
             )
-            print("Đã nén Model xuống int8!")
+            logger.info("Model compressed to INT8!")
     except Exception as e:
-        print(f"LỖI LOAD MODEL: {e}")
+        logger.error(f"LOAD MODEL ERROR: {e}")
         exit(1)
 
-# --- Transform ảnh cho Captioning ---
+# --- Image Transforms for Captioning ---
 image_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -115,51 +132,53 @@ image_transform = transforms.Compose([
 ])
 
 # ==========================================
-# 3. LOAD MODEL KHOẢNG CÁCH (Depth Anything)
+# 3. LOAD DISTANCE MODEL (Depth Anything V2)
 # ==========================================
-print(">> Đang tải Depth Anything V2...")
+logger.info(">> Loading Depth Anything V2...")
 try:
-    # Không cần scale_factor vì đã fix cứng A,B,C trong class
+    # A, B, C constants are fixed in the class
     dist_calc = DepthEstimator(device=device) 
 except Exception as e:
-    print(f"Lỗi Depth Model: {e}")
+    logger.error(f"Depth Model Error: {e}")
     exit(1)
 
 # ==========================================
-# 3.5 WARMUP (GIẢM GIẬT REQUEST ĐẦU TRÊN CPU)
+# 3.5 WARMUP (REDUCE FIRST REQUEST JITTER ON CPU)
 # ==========================================
 def warmup_models():
+    """Warms up models with a dummy image."""
     try:
-        print(">> Warmup models (CPU)...")
+        logger.info(">> Warming up models...")
         dummy_np = np.zeros((240, 320, 3), dtype=np.uint8)
         dummy_pil = Image.fromarray(dummy_np, mode="RGB")
 
         # Warmup Depth
         _ = dist_calc.estimate_distance(dummy_np)
 
-        # Warmup Caption (không dịch)
+        # Warmup Caption (no translation)
         dummy_tensor = image_transform(dummy_pil).unsqueeze(0).to(device)
-        _ = model_custom.beam_search(
-            dummy_tensor,
-            tokenizer,
-            beam_size=1,
-            max_len=10,
-            device=device,
-            no_repeat_ngram_size=2,
-            repetition_penalty=1.0
-        )
+        with torch.no_grad():
+            _ = model_custom.beam_search(
+                dummy_tensor,
+                tokenizer,
+                beam_size=1,
+                max_len=10,
+                device=device,
+                no_repeat_ngram_size=2,
+                repetition_penalty=1.0
+            )
 
-        print(">> Warmup 완료.")
+        logger.info(">> Warmup completed.")
     except Exception as e:
-        print(f">> Warmup skipped: {e}")
+        logger.warning(f">> Warmup skipped: {e}")
 
 warmup_models()
 
 # ==========================================
-# 4. HÀM XỬ LÝ PHỤ TRỢ
+# 4. UTILITY FUNCTIONS
 # ==========================================
 def format_distance_output(distance_m, unit_str):
-    """Chuyển đổi đơn vị hiển thị"""
+    """Converts distance to target unit string."""
     unit_str = unit_str.lower()
     if unit_str == 'm':
         return f"{distance_m:.2f}", ' mét'
@@ -169,7 +188,7 @@ def format_distance_output(distance_m, unit_str):
         return f"{distance_m * 100:.0f}", ' xăng-ti-mét'
 
 # ==========================================
-# 5. ROUTE API
+# 5. API ROUTES
 # ==========================================
 @app.route('/')
 def index():
@@ -177,7 +196,7 @@ def index():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    # Khai báo biến để cleanup trong finally
+    # Variables for cleanup in finally block
     pil_image = None
     cv_image = None
     img_tensor = None
@@ -187,7 +206,7 @@ def predict():
         request_counter += 1
         t0 = time.perf_counter()
 
-        # A. Nhận dữ liệu
+        # A. Receive Data
         data = request.json
         if not data or 'image' not in data:
             return jsonify({'error': 'No image provided'}), 400
@@ -196,39 +215,41 @@ def predict():
         lang = (data.get('lang', 'vi') or 'vi').lower()  # "vi" | "en"
         mode = (data.get('mode', 'full') or 'full').lower()  # "full" | "distance_only"
         
-        # B. Decode ảnh Base64
+        # B. Decode Base64 Image
         image_data = data['image'].split(",")[1]
         image_bytes = base64.b64decode(image_data)
         
-        # Convert sang PIL (cho Captioning) và OpenCV (cho Distance)
+        # Convert to PIL (for Captioning) and OpenCV (for Distance)
         pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         cv_image = np.array(pil_image) 
-        # Lưu ý: PIL là RGB, OpenCV mặc định đọc file là BGR. 
-        # Nhưng np.array(pil) sẽ ra RGB. DepthAnything và ViT đều nhận RGB tốt.
-        # Nếu muốn hiển thị cv2.imshow đúng màu thì mới cần convert BGR.
+        # Note: PIL is RGB, OpenCV defaults to BGR for file reading.
+        # But np.array(pil) yields RGB. DepthAnything and ViT both accept RGB.
 
         # ---------------------------------------------------------
-        # C. TÍNH KHOẢNG CÁCH & VỊ TRÍ (UPDATE QUAN TRỌNG)
+        # C. DISTANCE & POSITION ESTIMATION
         # ---------------------------------------------------------
-        # Gọi hàm mới trả về 3 giá trị
         t_dist0 = time.perf_counter()
-        distance_meters, position_text, box_coords = dist_calc.estimate_distance(cv_image)
+        with torch.no_grad():
+            distance_meters, position_text, box_coords = dist_calc.estimate_distance(cv_image)
         t_dist1 = time.perf_counter()
         
-        # Format đơn vị (m/cm/dm)
+        # Log distance inference time
+        logger.info(f"Distance Inference Time: {(t_dist1 - t_dist0)*1000:.2f}ms")
+        
+        # Format units (m/cm/dm)
         dist_value, dist_label = format_distance_output(distance_meters, unit_pref)
         dist_display_text = f"{dist_value}{dist_label}"
         
         caption_en = ""
-        caption_text = ""  # ngôn ngữ theo lang: vi hoặc en
+        caption_text = ""  # language based on lang: vi or en
 
         # ---------------------------------------------------------
-        # D. SINH CAPTION (MÔ TẢ ẢNH) - CHỈ KHI mode=full
+        # D. IMAGE CAPTIONING - ONLY IF mode=full
         # ---------------------------------------------------------
         if mode == "full":
             t_cap0 = time.perf_counter()
             img_tensor = image_transform(pil_image).unsqueeze(0).to(device)
-            # CPU-friendly
+            # CPU-friendly max length
             max_len_cfg = min(25, int(trans_cfg.get('max_len', 40)))
 
             with torch.no_grad():
@@ -248,20 +269,23 @@ def predict():
                 try:
                     caption_text = translate_en_to_vi_cached(caption_en)
                 except Exception:
-                    caption_text = caption_en  # fallback nếu lỗi mạng
+                    caption_text = caption_en  # fallback on network error
             t_cap1 = time.perf_counter()
+            
+            # Log caption inference time
+            logger.info(f"Caption Inference Time: {(t_cap1 - t_cap0)*1000:.2f}ms")
         else:
             caption_text = ""
             t_cap0 = None
             t_cap1 = None
 
         # ---------------------------------------------------------
-        # E. TẠO CÂU NÓI & CẢNH BÁO (LOGIC MỚI)
+        # E. SPEECH GENERATION & WARNINGS
         # ---------------------------------------------------------
         warning_msg = ""
 
         if mode != "full":
-            # Distance-only: nói hướng + khoảng cách + cảnh báo
+            # Distance-only: direction + distance + warning
             if lang == "en":
                 if distance_meters < 0.6:
                     warning_msg = "WARNING! VERY CLOSE"
@@ -279,7 +303,7 @@ def predict():
                 else:
                     final_speech = f"{position_text}. Cách {dist_display_text}."
         else:
-            # Full: có caption
+            # Full: includes caption
             if lang == "en":
                 if distance_meters < 0.6:
                     warning_msg = "WARNING! VERY CLOSE"
@@ -298,19 +322,19 @@ def predict():
                     final_speech = f"{caption_text}. {position_text} cách {dist_display_text}"
 
         # ---------------------------------------------------------
-        # F. TRẢ VỀ JSON
+        # F. RETURN JSON RESPONSE
         # ---------------------------------------------------------
         response = {
             'caption_vi': caption_text,
             'distance': dist_display_text,
-            'position': position_text,      # Trả về hướng (Trái/Phải/Trước)
+            'position': position_text,      # Direction (Left/Right/Ahead)
             'warning': warning_msg,
             'final_speech': final_speech,
             'unit_used': dist_label,
-            'box': box_coords               # Trả về tọa độ [x1, y1, x2, y2] để vẽ
+            'box': box_coords               # Bounding box coords [x1, y1, x2, y2]
         }
 
-        # Timing nhẹ (không ảnh hưởng UI nếu bạn không dùng)
+        # Timing info
         t1 = time.perf_counter()
         response["timing_ms"] = {
             "total": round((t1 - t0) * 1000, 1),
@@ -321,33 +345,30 @@ def predict():
         return jsonify(response)
 
     except Exception as e:
-        print(f"SERVER ERROR: {e}")
+        logger.error(f"SERVER ERROR: {e}")
         return jsonify({'error': str(e)}), 500
 
     finally:
         # ---------------------------------------------------------
-        # G. DỌN DẸP BỘ NHỚ (LUÔN CHẠY)
+        # G. MEMORY CLEANUP
         # ---------------------------------------------------------
-        # Tránh del biến chưa được gán khi có exception sớm
+        # Avoid deleting variables not assigned due to early exceptions
         pil_image = None
         cv_image = None
         img_tensor = None
 
-        # CPU: chỉ gc theo chu kỳ để giảm jitter
+        # Periodically trigger garbage collection
         if request_counter % 50 == 0:
             gc.collect()
 
 # ==========================================
-# 6. CHẠY SERVER
+# 6. RUN SERVER
 # ==========================================
 if __name__ == '__main__':
     from waitress import serve
-    print("\n" + "="*50)
-    print("SERVER ĐANG CHẠY TẠI: http://127.0.0.1:5000")
-    print("Chế độ: Production (Waitress - Multi-thread)")
-    print("="*50 + "\n")
+    logger.info("\n" + "="*50)
+    logger.info("SERVER RUNNING AT: http://127.0.0.1:5000")
+    logger.info("Mode: Production (Waitress - Multi-thread)")
+    logger.info("="*50 + "\n")
     
     serve(app, host='0.0.0.0', port=5000, threads=4)
-
-# if __name__ == '__main__':
-#     app.run(debug=True, host='0.0.0.0', port=5000)
