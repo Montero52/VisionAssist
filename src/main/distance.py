@@ -5,26 +5,39 @@ import cv2
 import logging
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from collections import deque
+import config
+from src.main.model.openvino_engine import OpenVINOEngine
 
 logger = logging.getLogger("DistanceEstimator")
 
 class DepthEstimator:
-    def __init__(self, device, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
+    def __init__(self, device, model_name="depth-anything/Depth-Anything-V2-Small-hf", use_openvino: bool = False):
         """
         Initializes the Depth Estimator with a pretrained Depth-Anything-V2 model.
         Args:
             device (str): Device to run inference on (e.g., 'cpu', 'cuda', 'auto').
             model_name (str): Hugging Face model repository name.
+            use_openvino (bool): Whether to use OpenVINO for inference.
         """
         self.device = device
+        self.use_openvino = use_openvino
         self.history = deque(maxlen=5) 
         
-        logger.info(f"Loading Depth Model: {model_name}...")
+        logger.info(f"Loading Depth Model: {model_name} (OpenVINO={self.use_openvino})...")
+        
         try:
             self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
-            self.model = AutoModelForDepthEstimation.from_pretrained(model_name).to(self.device)
-            self.model.eval()
-            logger.info("Depth Model loaded successfully!")
+            
+            if self.use_openvino:
+                # Use OpenVINO Engine
+                self.ov_engine = OpenVINOEngine()
+                logger.info("Depth Model loaded via OpenVINO Engine!")
+            else:
+                # Use PyTorch
+                self.model = AutoModelForDepthEstimation.from_pretrained(model_name).to(self.device)
+                self.model.eval()
+                logger.info("Depth Model loaded via PyTorch successfully!")
+                
         except Exception as e:
             logger.error(f"Error loading depth model: {e}")
             raise e
@@ -37,19 +50,32 @@ class DepthEstimator:
         """
         # 1. Model Inference
         inputs = self.processor(images=cv_image, return_tensors="pt")
-        pixel_values = inputs['pixel_values'].to(self.device)
+        pixel_values = inputs['pixel_values']
         
-        with torch.no_grad():
-            output = self.model(pixel_values=pixel_values)
-            predicted_depth = output.predicted_depth
-            prediction = F.interpolate(
-                predicted_depth.unsqueeze(1),
-                size=cv_image.shape[:2],
-                mode="bicubic",
-                align_corners=False,
-            ).squeeze()
+        if self.use_openvino:
+            # OpenVINO Inference
+            depth_map = self.ov_engine.infer_depth(pixel_values)
+            # OpenVINO returns [1, H, W], we need to squeeze it
+            if depth_map.ndim == 3:
+                depth_map = depth_map.squeeze(0)
+            
+            # Interpolate to match image size if necessary
+            if depth_map.shape != cv_image.shape[:2]:
+                depth_map = cv2.resize(depth_map, (cv_image.shape[1], cv_image.shape[0]), interpolation=cv2.INTER_CUBIC)
+        else:
+            # PyTorch Inference
+            pixel_values = pixel_values.to(self.device)
+            with torch.no_grad():
+                output = self.model(pixel_values=pixel_values)
+                predicted_depth = output.predicted_depth
+                prediction = F.interpolate(
+                    predicted_depth.unsqueeze(1),
+                    size=cv_image.shape[:2],
+                    mode="bicubic",
+                    align_corners=False,
+                ).squeeze()
+            depth_map = prediction.cpu().numpy()
         
-        depth_map = prediction.cpu().numpy()
         h, w = depth_map.shape
         
         # ====================================================

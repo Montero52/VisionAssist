@@ -4,6 +4,8 @@ from src.main.decode.caption_decoder import TransformerDecoder
 import torch
 import torch.nn.functional as F
 import logging
+import config
+from .openvino_engine import OpenVINOEngine
 
 logger = logging.getLogger("ViT-Transformer")
 
@@ -14,8 +16,16 @@ class ViT_Transformer(nn.Module):
         trans_cfg: dict,
         vocab_size: int = None, # Allow None to infer from config
         max_len: int = 32, 
+        use_openvino: bool = False
     ):
         super().__init__()
+        
+        self.use_openvino = use_openvino
+        if self.use_openvino:
+            logger.info("Initializing ViT-Transformer in OpenVINO Mode...")
+            self.ov_engine = OpenVINOEngine()
+        else:
+            logger.info("Initializing ViT-Transformer in PyTorch Mode...")
         
         # [FIX 1] Priority: passed vocab_size -> config -> default T5
         self.vocab_size = vocab_size if vocab_size is not None else trans_cfg.get('vocab_size', 32128)
@@ -32,7 +42,7 @@ class ViT_Transformer(nn.Module):
             num_heads=vit_config.get("num_heads", 12),
             mlp_ratio=vit_config.get("mlp_ratio", 4.0),
             dropout=vit_config.get("dropout", 0.0),
-            pretrained=True,
+            pretrained=not self.use_openvino, # Don't load weights if using OV
         )
 
         # 2. Decoder: Custom Transformer
@@ -62,6 +72,9 @@ class ViT_Transformer(nn.Module):
             input_ids: [Batch, Seq_Len] tensor (with Start Token)
             padding_mask: [Batch, Seq_Len] (1 for real token, 0 for pad)
         """
+        if self.use_openvino:
+            logger.warning("Forward pass not recommended in OpenVINO mode. Use beam_search().")
+            
         features = self.encoder(images) 
         encoder_out = self.proj(features)
       
@@ -90,10 +103,19 @@ class ViT_Transformer(nn.Module):
     def beam_search(self, image: torch.Tensor, tokenizer, beam_size=3, max_len=30, device="cpu", alpha=0.7, no_repeat_ngram_size=2, repetition_penalty=1.0):
         """
         Improved Beam Search with N-gram Blocking to prevent repetitive output.
-        Args:
-            - no_repeat_ngram_size (int): Size of forbidden repetitive phrases (e.g., 2 prevents "box of" ... "box of").
-            - repetition_penalty (float): > 1.0 penalizes already generated words.
+        Automatically switches between PyTorch and OpenVINO modes.
         """
+        if self.use_openvino:
+            return self.ov_engine.beam_search(
+                image_tensor=image,
+                tokenizer=tokenizer,
+                beam_size=beam_size,
+                max_len=max_len,
+                alpha=alpha,
+                no_repeat_ngram_size=no_repeat_ngram_size,
+                repetition_penalty=repetition_penalty
+            )
+            
         self.eval()
         
         # 1. Image Encoding
