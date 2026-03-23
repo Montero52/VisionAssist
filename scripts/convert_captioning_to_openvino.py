@@ -87,11 +87,36 @@ def convert_captioning_model():
     encoder_path.parent.mkdir(parents=True, exist_ok=True)
     decoder_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 2. Initialize Original Model
-    logger.info("Initializing original ViT_Transformer model...")
-    # vocab_size is usually updated during training, using config default for conversion
+# ==========================================================
+    # 2. LOAD WEIGHTS & DYNAMIC MODEL INITIALIZATION
+    # ==========================================================
+    WEIGHTS_PATH = "checkpoints/vizwiz_adapted_final.pth"
+    
+    if not os.path.exists(WEIGHTS_PATH):
+        logger.error(f"Weights file not found at: {WEIGHTS_PATH}")
+        return
+
+    # Load checkpoint to CPU to save memory
+    logger.info(f"Loading VizWiz weights from: {WEIGHTS_PATH}")
+    checkpoint = torch.load(WEIGHTS_PATH, map_location="cpu")
+    
+    # Extract state_dict if it's a full training checkpoint
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+
+    # MLOps Optimization: Detect actual vocab_size from weights to prevent mismatch
+    # This ensures compatibility regardless of tokenizer pruning
+    actual_vocab_size = state_dict['decoder.token_embed.weight'].shape[0]
+    logger.info(f"Detected actual vocab_size from weights: {actual_vocab_size}")
+    trans_cfg['vocab_size'] = actual_vocab_size
+
+    # Initialize model once with the synchronized configuration
+    logger.info("Initializing ViT_Transformer with dynamic vocab_size...")
     full_model = ViT_Transformer(vit_config=vit_cfg, trans_cfg=trans_cfg)
+    
+    # Load weights into the architecture
+    full_model.load_state_dict(state_dict) 
     full_model.eval()
+    logger.info("Weights loaded successfully! Model is synchronized and ready for export.")
 
     # ==========================================
     # ENCODER CONVERSION
