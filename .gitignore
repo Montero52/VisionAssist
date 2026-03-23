@@ -34,4 +34,4 @@ ENV/
 .roo/
 plans/
 .repomixignore
-checkpoints/ir/captioning/
+checkpoints/ir/

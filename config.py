@@ -72,3 +72,12 @@ trans_cfg = dict(
 
 # --- TRAINING ---
 epochs = 15
+
+# --- OPENVINO CONFIGURATION ---
+USE_OPENVINO = True
+DEVICE = "AUTO" # Options: "CPU", "GPU", "AUTO"
+
+# IR Model Paths
+ENCODER_XML = os.path.join(BASE_DIR, "checkpoints", "ir", "captioning", "encoder", "encoder.xml")
+DECODER_XML = os.path.join(BASE_DIR, "checkpoints", "ir", "captioning", "decoder", "decoder.xml")
+DEPTH_XML = os.path.join(BASE_DIR, "checkpoints", "ir", "depth", "depth_anything_v2_small.xml")
