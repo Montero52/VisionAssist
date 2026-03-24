@@ -1,5 +1,5 @@
 # 1. Bỏ qua thư mục Test (Không đẩy dữ liệu test/ảnh test lên)
-tests/
+tests/assets/
 
 # 2. Bỏ qua các file biên dịch Python (Rác hệ thống)
 __pycache__/
@@ -17,6 +17,8 @@ ENV/
 *.pth
 *.pt
 *.weights
+*.bin
+*.xml
 
 # 5. Bỏ qua dữ liệu Dataset (Rất nặng)
 *flickr*
@@ -30,8 +32,9 @@ ENV/
 *.log
 *.sqlite
 *.db
+*.csv
 
 .roo/
 plans/
 .repomixignore
-checkpoints/ir/
+openvino_plan.md
