@@ -26,7 +26,7 @@ class DepthEstimator:
         logger.info(f"Loading Depth Model: {model_name} (OpenVINO={self.use_openvino})...")
         
         try:
-            self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
+            self.processor = AutoImageProcessor.from_pretrained(model_name)
             
             if self.use_openvino:
                 # Use OpenVINO Engine
