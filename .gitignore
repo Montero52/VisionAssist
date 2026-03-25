@@ -37,4 +37,3 @@ ENV/
 .roo/
 plans/
 .repomixignore
-openvino_plan.md
